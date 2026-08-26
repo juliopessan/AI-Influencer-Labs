@@ -51,6 +51,15 @@ mas não é isso. Ele fala pela Interactions API (`ai.interactions.create`), nã
 por `generateContent`, e exige `@google/genai` >= 2. A resposta vem em
 `output_text`; não vale a pena caminhar pela árvore de `steps`.
 
+**A variante do Veo carrega uma capacidade, não só um nome.** `VEO_MODELS` em
+`constants.ts` guarda preço e `supportsCharacterReference` de cada uma, checados
+contra a API. O `lite` rejeita `referenceImages`; mandar assim mesmo queima uma
+ida e volta por cena. Se trocar `VEO_MODEL`, a UI e o custo estimado seguem
+sozinhos — não espalhe o id do modelo pelo código.
+
+**Veo não faz 10 segundos.** `durationSeconds` é limitado a 4–8 nas três
+variantes. Cena mais longa exige emendar clipes.
+
 **Concorrência do Veo é limitada de propósito.** `VIDEO_RENDER_CONCURRENCY = 2`.
 Disparar as 6 cenas juntas estoura a cota por minuto.
 

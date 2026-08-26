@@ -1,6 +1,6 @@
 import React from 'react';
 import { AspectRatio, VideoChunk, VideoStyle } from '../../types';
-import { VIDEO_CHUNK_GENERATION_COST } from '../../constants';
+import { CHUNK_DURATION, VEO_MODEL, VIDEO_CHUNK_GENERATION_COST } from '../../constants';
 import { Badge, Button, Panel, PanelHeader, SegmentedControl, Spinner, StatusTone, Toggle } from '../ui';
 
 const STYLE_OPTIONS: ReadonlyArray<{ value: VideoStyle; label: string; description: string }> = [
@@ -116,6 +116,11 @@ export const ProductionStep: React.FC<ProductionStepProps> = ({
   const done = videos.filter((v) => v.status === 'done').length;
   const settingsLocked = isGenerating || isMerging;
 
+  // The configured Veo variant decides whether the reference is even sendable.
+  const referenceSupported = VEO_MODEL.supportsCharacterReference;
+  const referenceAvailable = referenceSupported && hasInfluencerImage;
+  const estimatedUsd = videos.length * CHUNK_DURATION * VEO_MODEL.usdPerSecond;
+
   return (
     <div className="space-y-6">
       <Panel>
@@ -152,13 +157,15 @@ export const ProductionStep: React.FC<ProductionStepProps> = ({
             <Toggle
               label="Consistência de personagem"
               description={
-                hasInfluencerImage
-                  ? 'Envia a foto da influencer como referência em cada cena, reduzindo variação de rosto e roupa. Se o modelo recusar, a cena segue só com texto.'
-                  : 'Indisponível: nenhuma foto de influencer carregada.'
+                !referenceSupported
+                  ? `Indisponível em ${VEO_MODEL.id}: este modelo não aceita imagem de referência, então rosto e roupa podem variar entre as cenas.`
+                  : hasInfluencerImage
+                    ? 'Envia a foto da influencer como referência em cada cena, reduzindo variação de rosto e roupa. Se o modelo recusar, a cena segue só com texto.'
+                    : 'Indisponível: nenhuma foto de influencer carregada.'
               }
-              checked={useCharacterReference && hasInfluencerImage}
+              checked={useCharacterReference && referenceAvailable}
               onChange={setUseCharacterReference}
-              disabled={settingsLocked || !hasInfluencerImage}
+              disabled={settingsLocked || !referenceAvailable}
             />
           </div>
         </div>
@@ -167,7 +174,11 @@ export const ProductionStep: React.FC<ProductionStepProps> = ({
       <Panel>
         <PanelHeader
           title="Cenas"
-          description={`Cada cena custa ${VIDEO_CHUNK_GENERATION_COST} créditos e é renderizada separadamente.`}
+          description={`Cada cena custa ${VIDEO_CHUNK_GENERATION_COST} créditos e é renderizada separadamente. ${
+            videos.length > 0
+              ? `Custo real de API para as ${videos.length}: cerca de US$ ${estimatedUsd.toFixed(2)}.`
+              : ''
+          }`}
           action={
             <div className="flex items-center gap-2">
               <Badge tone={done === videos.length && videos.length > 0 ? 'ok' : 'neutral'}>

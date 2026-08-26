@@ -14,7 +14,13 @@ import {
   ImagePayload,
   MediaPayload,
 } from "../types";
-import { MAX_CHUNKS, CHUNK_DURATION, VIDEO_POLL_INTERVAL_MS, VIDEO_POLL_TIMEOUT_MS } from "../constants";
+import {
+  MAX_CHUNKS,
+  CHUNK_DURATION,
+  VEO_MODEL,
+  VIDEO_POLL_INTERVAL_MS,
+  VIDEO_POLL_TIMEOUT_MS,
+} from "../constants";
 import {
   DEFAULT_RETRY_POLICY,
   RetryPolicy,
@@ -566,7 +572,7 @@ export async function generateVideoForChunk(chunk: ScriptChunk, options: VideoRe
   const startGeneration = (withReference: boolean) =>
     retryWithBackoff(() =>
       ai.models.generateVideos({
-        model: "veo-3.1-generate-preview",
+        model: VEO_MODEL.id,
         prompt: fullPrompt,
         config: {
           numberOfVideos: 1,
@@ -589,13 +595,17 @@ export async function generateVideoForChunk(chunk: ScriptChunk, options: VideoRe
   assertNotAborted(signal);
   onProgress?.("Enviando cena para o Veo");
 
+  // `lite` rejects the field outright, so sending it would burn a round trip on
+  // every scene just to be told no.
+  const canUseReference = VEO_MODEL.supportsCharacterReference && Boolean(characterImage);
+
   let operation;
   try {
-    operation = await startGeneration(Boolean(characterImage));
+    operation = await startGeneration(canUseReference);
   } catch (error) {
     // Reference images are not available on every model tier or region. Rather
     // than failing the scene, fall back to the text-only prompt.
-    if (characterImage && classifyFailure(error).status === 400) {
+    if (canUseReference && classifyFailure(error).status === 400) {
       console.warn("Referência de personagem rejeitada pelo modelo; renderizando somente com texto.");
       onProgress?.("Referência de personagem indisponível, usando apenas texto");
       operation = await startGeneration(false);

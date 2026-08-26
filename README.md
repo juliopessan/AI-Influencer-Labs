@@ -57,7 +57,7 @@ Cada etapa é um "agente" com um modelo e um prompt próprios. Todos vivem em
 | 3b| Diretor (link)       | URL de referência              | Diretrizes de estilo         | `gemini-2.5-flash` |
 | 4 | Roteirista           | Briefing + persona + estilo    | Roteiro de 6 cenas (JSON)    | conforme o modo¹   |
 | 5 | Diretor de Vídeo     | Cena + narração + estilo       | Prompt otimizado para Veo    | `gemini-2.5-flash` |
-| 6 | Renderizador         | Prompt + foto de referência    | Clipe de 8s (blob)           | `veo-3.1-generate-preview` |
+| 6 | Renderizador         | Prompt otimizado               | Clipe de 8s (blob)           | `veo-3.1-lite-generate-preview` |
 | 7 | Social               | Roteiro completo               | Legendas por plataforma      | `gemini-2.5-flash` |
 
 ¹ `fast` → `gemini-2.5-flash-lite`, `balanced` → `gemini-2.5-flash`,
@@ -74,11 +74,24 @@ prompt. O agente Diretor de Vídeo obriga o prompt a terminar com
 tradução. Sem isso o roteiro é escrito, exibido e editado — e depois descartado,
 porque nunca chega ao modelo.
 
-**Consistência de personagem.** A foto da influencer é enviada ao Veo como
-`referenceImages` do tipo `ASSET`, o que segura rosto e roupa entre as cenas. Nem
-todo tier do modelo aceita esse campo; quando a API responde 400, o renderizador
-repete a chamada só com texto em vez de falhar a cena. Dá para desligar pelo
-toggle "Consistência de Personagem".
+**Escolha do modelo Veo, e o que ela custa.** As três variantes estão em
+`VEO_MODELS` (`constants.ts`) com preço e capacidade, verificados contra a API:
+
+| Variante | `referenceImages` | US$/s (720p) | Campanha 6×8s |
+| -------- | ----------------- | ------------ | ------------- |
+| `lite` ← **em uso** | não aceita | 0,05 | ~US$ 2,40 |
+| `fast`   | aceita            | 0,15 | ~US$ 7,20 |
+| `quality`| aceita            | 0,40 | ~US$ 19,20 |
+
+Trocar é mudar `VEO_MODEL` em `constants.ts`. As três limitam `durationSeconds`
+a 4–8 segundos: **não existe clipe de 10s numa única geração**.
+
+**Consistência de personagem.** A foto da influencer vai ao Veo como
+`referenceImages` do tipo `ASSET`, o que segura rosto e roupa entre as cenas —
+mas o `lite` rejeita esse campo, então na configuração atual a aparência varia
+de cena para cena. O renderizador só envia o campo quando a variante aceita, e
+ainda repete a chamada sem ele caso a API responda 400. O toggle na etapa de
+Produção se desabilita sozinho e explica por quê.
 
 **O diretor assiste, quando pode.** O Gemini Omni aceita vídeo na entrada e
 responde em texto, então enviar o arquivo de referência produz uma análise do
@@ -156,6 +169,9 @@ components/steps/          Uma etapa do fluxo por arquivo
 
 ## Limitações conhecidas
 
+- **Créditos não correspondem a dinheiro.** 30 créditos por campanha versus o
+  custo real de API na tabela acima. A etapa de Produção mostra a estimativa em
+  dólar ao lado dos créditos para a diferença ficar visível.
 - **Créditos são locais.** `INITIAL_CREDITS` é apenas um contador em memória,
   persistido junto com o projeto. Não há cobrança nem servidor.
 - **Os clipes não sobrevivem ao reload.** Salvar o projeto guarda textos e
