@@ -146,7 +146,15 @@ function App() {
   const [socialContent, setSocialContent] = useState<SocialContentGenerated | null>(null);
 
   const [toast, setToast] = useState<ToastState | null>(null);
-  const [canLoadProject, setCanLoadProject] = useState(false);
+  const [canLoadProject, setCanLoadProject] = useState(() => {
+    try {
+      return localStorage.getItem(LOCAL_STORAGE_KEY) !== null;
+    } catch (e) {
+      // Private browsing modes can throw on localStorage access.
+      console.warn("localStorage indisponível:", e);
+      return false;
+    }
+  });
 
   const dismissToast = useCallback(() => setToast(null), []);
 
@@ -176,7 +184,7 @@ function App() {
     }
     if (mergedVideoUrl) live.add(mergedVideoUrl);
 
-    for (const url of [...objectUrlsRef.current]) {
+    for (const url of objectUrlsRef.current) {
       if (!live.has(url)) {
         URL.revokeObjectURL(url);
         objectUrlsRef.current.delete(url);
@@ -203,13 +211,6 @@ function App() {
         }
     };
     void checkApiKey();
-
-    try {
-        if (localStorage.getItem(LOCAL_STORAGE_KEY)) setCanLoadProject(true);
-    } catch (e) {
-        // Private browsing modes can throw on localStorage access.
-        console.warn("localStorage indisponível:", e);
-    }
   }, []);
 
   const handleSelectApiKey = async () => {
@@ -562,10 +563,14 @@ function App() {
     }
   }, [videos, trackObjectUrl]);
 
-  // Auto-assemble the final cut once every scene has rendered.
+  // Auto-assemble the final cut once every scene has rendered. This is a real
+  // state-driven side effect — merging reads the rendered clips and drives a
+  // MediaRecorder — so the effect is the right place for it even though it ends
+  // up setting state.
   useEffect(() => {
     const allDone = videos.length > 0 && videos.every(v => v.status === 'done');
     if (allDone && !isGeneratingVideo && !mergedVideoUrl && !isMerging) {
+      // oxlint-disable-next-line react/set-state-in-effect
       void handleMergeVideos();
     }
   }, [videos, isGeneratingVideo, mergedVideoUrl, isMerging, handleMergeVideos]);

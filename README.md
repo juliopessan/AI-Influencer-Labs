@@ -17,10 +17,16 @@ Outros comandos:
 
 | Comando             | O que faz                                  |
 | ------------------- | ------------------------------------------ |
+| `npm run lint`      | Lint (oxlint)                              |
 | `npm run typecheck` | Checagem de tipos (`tsc --noEmit`)         |
 | `npm test`          | Testes unitários (vitest)                  |
+| `npm run deadcode`  | Exports e dependências não usados (knip)   |
 | `npm run build`     | Typecheck + build de produção em `dist/`   |
 | `npm run preview`   | Serve o build de produção                  |
+
+O CI (`.github/workflows/ci.yml`) roda lint, typecheck, testes, deadcode e
+build em cada PR. Para os mesmos checks localmente antes do commit:
+`npx lefthook install`.
 
 ### Chave de API
 
@@ -91,7 +97,8 @@ vez de deixar o usuário esperando.
 > [DeepSeek Harness](https://github.com/deepseek-ai/deepseek-harness) (MIT),
 > especificamente de `@deepseek-ai/dsh-llm`: a regra de rotear por código e não
 > por mensagem, a política de backoff e a distinção entre cota terminal e
-> throttling transitório.
+> throttling transitório. A configuração de lint, os hooks de git e a estrutura
+> do CI vieram do mesmo repositório.
 
 **Créditos.** O custo total é debitado antes de começar, para a confirmação
 mostrar um valor exato, e devolvido por cena que falhar. Cenas com erro podem ser

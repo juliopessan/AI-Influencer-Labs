@@ -5,9 +5,11 @@
   "type": "module",
   "scripts": {
     "dev": "vite",
+    "lint": "oxlint",
     "typecheck": "tsc --noEmit",
     "test": "vitest run",
     "test:watch": "vitest",
+    "deadcode": "knip",
     "build": "tsc --noEmit && vite build",
     "preview": "vite preview"
   },
@@ -24,6 +26,9 @@
     "@types/react-dom": "^19.2.5",
     "@vitejs/plugin-react": "^5.0.0",
     "autoprefixer": "^10.5.4",
+    "knip": "^6.32.2",
+    "lefthook": "^2.1.10",
+    "oxlint": "^1.80.0",
     "postcss": "^8.5.26",
     "tailwindcss": "^3.4.19",
     "typescript": "~5.8.2",

@@ -125,12 +125,20 @@ const ScriptGenerator: React.FC<ScriptGeneratorProps> = ({
 
     setUploadError(null);
     setImageFile(file);
-    fileToDataUrl(file)
-      .then(dataUrl => {
-        setPreview(dataUrl);
-        callback?.(file);
-      })
-      .catch(() => setUploadError('Não foi possível ler o arquivo selecionado.'));
+
+    void (async () => {
+      let dataUrl: string;
+      try {
+        dataUrl = await fileToDataUrl(file);
+      } catch {
+        setUploadError('Não foi possível ler o arquivo selecionado.');
+        return;
+      }
+      setPreview(dataUrl);
+      // Outside the try on purpose: a failure inside the callback is the
+      // caller's to report, not a "could not read the file" error.
+      callback?.(file);
+    })();
   };
 
   // Rebuild previews for files restored from a saved project, where the upload
@@ -169,7 +177,7 @@ const ScriptGenerator: React.FC<ScriptGeneratorProps> = ({
         .replace(/\*\*(.*?)\*\*/g, '<strong style="color: #000000; font-weight: 700;">$1</strong>')
         .replace(/\*(.*?)\*/g, '<em style="color: #475569;">$1</em>')
         // Fix Lists
-        .replace(/^[\*\-]\s+(.*)$/gm, '<div style="margin-left: 15px; margin-bottom: 6px; display: flex; align-items: flex-start;"><span style="color: #00a1e0; margin-right: 8px; font-weight: bold; font-size: 14px;">•</span><span style="flex: 1; color: #444444; line-height: 1.5;">$1</span></div>')
+        .replace(/^[*-]\s+(.*)$/gm, '<div style="margin-left: 15px; margin-bottom: 6px; display: flex; align-items: flex-start;"><span style="color: #00a1e0; margin-right: 8px; font-weight: bold; font-size: 14px;">•</span><span style="flex: 1; color: #444444; line-height: 1.5;">$1</span></div>')
         // Headers
         .replace(/^##\s+(.*)$/gm, '<h3 style="font-size: 14px; font-weight: 700; color: #1a1f36; margin-top: 15px; margin-bottom: 8px; border-left: 3px solid #00a1e0; padding-left: 8px;">$1</h3>')
         .replace(/^###\s+(.*)$/gm, '<h4 style="font-size: 12px; font-weight: 600; color: #334155; margin-top: 10px; margin-bottom: 5px;">$1</h4>')

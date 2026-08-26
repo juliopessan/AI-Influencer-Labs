@@ -1,5 +1,5 @@
 
-import React, { useEffect, useState } from 'react';
+import React, { useEffect, useRef, useState } from 'react';
 import { CreditIcon, NewProjectIcon, SaveIcon, FolderOpenIcon } from './Icons';
 
 interface HeaderProps {
@@ -12,31 +12,28 @@ interface HeaderProps {
 
 const AnimatedCounter: React.FC<{ value: number }> = ({ value }) => {
   const [displayValue, setDisplayValue] = useState(value);
-  const [isDecreasing, setIsDecreasing] = useState(false);
+  // The animation's own cursor. Holding it in a ref lets the effect depend on
+  // `value` alone, so one timer runs per credit change; the previous version
+  // listed displayValue as a dependency and so tore the interval down and
+  // rebuilt it on every single tick.
+  const displayRef = useRef(value);
 
   useEffect(() => {
-    if (value !== displayValue) {
-      setIsDecreasing(value < displayValue);
-      const step = value > displayValue ? 1 : -1;
-      const interval = setInterval(() => {
-        setDisplayValue((prev) => {
-          if (prev === value) {
-            clearInterval(interval);
-            return value;
-          }
-          return prev + step;
-        });
-      }, 50);
-      
-      // Reset color effect after animation
-      const timeout = setTimeout(() => setIsDecreasing(false), 1000);
-      
-      return () => {
-        clearInterval(interval);
-        clearTimeout(timeout);
-      };
-    }
-  }, [value, displayValue]);
+    if (displayRef.current === value) return;
+
+    const interval = setInterval(() => {
+      displayRef.current += Math.sign(value - displayRef.current);
+      setDisplayValue(displayRef.current);
+      if (displayRef.current === value) clearInterval(interval);
+    }, 50);
+
+    return () => clearInterval(interval);
+  }, [value]);
+
+  // Derived rather than stored: the counter reads red exactly while it still
+  // has ground to lose, which drops both the extra state and the timer that
+  // used to reset it.
+  const isDecreasing = displayValue > value;
 
   return (
     <span className={`font-mono font-bold text-lg transition-all duration-300 ${isDecreasing ? 'text-red-400 scale-110 inline-block' : 'text-cyan-300'}`}>

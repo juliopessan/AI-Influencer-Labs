@@ -19,7 +19,6 @@ import {
 } from "./failures";
 
 export { humanizeError } from "./failures";
-export type { Failure, FailureCode } from "./failures";
 
 // --- Client -----------------------------------------------------------------
 
@@ -28,7 +27,7 @@ export type { Failure, FailureCode } from "./failures";
  * from GEMINI_API_KEY via vite's `define`. Resolved lazily so that a missing key
  * surfaces as a readable error instead of a crash at module load.
  */
-export function resolveApiKey(): string | null {
+function resolveApiKey(): string | null {
   const key = process.env.API_KEY || process.env.GEMINI_API_KEY;
   return key && key.length > 0 ? key : null;
 }

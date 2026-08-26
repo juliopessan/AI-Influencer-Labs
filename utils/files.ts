@@ -4,8 +4,12 @@ import { ImagePayload } from '../types';
 export function fileToDataUrl(file: File): Promise<string> {
   return new Promise((resolve, reject) => {
     const reader = new FileReader();
-    reader.onload = () => resolve(reader.result as string);
-    reader.onerror = () => reject(reader.error ?? new Error('Falha ao ler o arquivo.'));
+    reader.addEventListener('load', () => resolve(reader.result as string), { once: true });
+    reader.addEventListener(
+      'error',
+      () => reject(reader.error ?? new Error('Falha ao ler o arquivo.')),
+      { once: true }
+    );
     reader.readAsDataURL(file);
   });
 }
@@ -45,7 +49,7 @@ export async function mapWithConcurrency<T, R>(
   limit: number,
   worker: (item: T, index: number) => Promise<R>
 ): Promise<R[]> {
-  const results = new Array<R>(items.length);
+  const results: R[] = Array.from({ length: items.length });
   let cursor = 0;
 
   const runners = Array.from({ length: Math.max(1, Math.min(limit, items.length)) }, async () => {

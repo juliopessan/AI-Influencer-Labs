@@ -35,7 +35,7 @@ function pickRecorderMimeType(): string | undefined {
   return RECORDER_CANDIDATES.find((type) => MediaRecorder.isTypeSupported(type));
 }
 
-export function isMergeSupported(): boolean {
+function isMergeSupported(): boolean {
   return (
     typeof MediaRecorder !== 'undefined' &&
     typeof HTMLCanvasElement !== 'undefined' &&
@@ -132,13 +132,13 @@ export async function mergeVideoClips(urls: string[], options: MergeOptions): Pr
 
     const recorder = new MediaRecorder(combinedStream, { mimeType });
     const recordedChunks: Blob[] = [];
-    recorder.ondataavailable = (event) => {
+    recorder.addEventListener('dataavailable', (event) => {
       if (event.data.size > 0) recordedChunks.push(event.data);
-    };
+    });
 
     const recording = new Promise<Blob>((resolve, reject) => {
-      recorder.onstop = () => resolve(new Blob(recordedChunks, { type: mimeType }));
-      recorder.onerror = () => reject(new Error('Falha na gravação do vídeo final.'));
+      recorder.addEventListener('stop', () => resolve(new Blob(recordedChunks, { type: mimeType })), { once: true });
+      recorder.addEventListener('error', () => reject(new Error('Falha na gravação do vídeo final.')), { once: true });
     });
 
     let activeVideo = videoA;
