@@ -98,7 +98,10 @@ export const DeliveryStep: React.FC<DeliveryStepProps> = ({
   canRemerge,
 }) => {
   const [platform, setPlatform] = useState<Platform>('instagram');
-  const frame = aspectRatio === '16:9' ? 'aspect-video' : 'aspect-[9/16]';
+  // A vertical clip at the horizontal player's width would run ~900px tall and
+  // push the download button off screen, so each ratio gets its own cap.
+  const frame =
+    aspectRatio === '16:9' ? 'aspect-video max-w-2xl' : 'aspect-[9/16] max-w-[300px]';
 
   return (
     <div className="grid items-start gap-6 lg:grid-cols-[minmax(0,1fr)_380px]">
@@ -111,7 +114,7 @@ export const DeliveryStep: React.FC<DeliveryStepProps> = ({
         <div className="p-5">
           {mergedVideoUrl ? (
             <div className="space-y-5">
-              <div className={`mx-auto overflow-hidden rounded border border-line bg-black ${frame} max-w-lg`}>
+              <div className={`mx-auto w-full overflow-hidden rounded border border-line bg-black ${frame}`}>
                 {/* No autoplay: the user decides when a video with sound starts. */}
                 <video controls src={mergedVideoUrl} className="h-full w-full" />
               </div>
@@ -119,6 +122,10 @@ export const DeliveryStep: React.FC<DeliveryStepProps> = ({
                 <Button
                   variant="primary"
                   size="lg"
+                  // A sandboxed preview blocks downloads a page starts itself,
+                  // so there the button would silently do nothing.
+                  disabled={__PREVIEW__}
+                  title={__PREVIEW__ ? 'Indisponível nesta prévia' : undefined}
                   onClick={() => {
                     const link = document.createElement('a');
                     link.href = mergedVideoUrl;
@@ -132,6 +139,12 @@ export const DeliveryStep: React.FC<DeliveryStepProps> = ({
                   Montar de novo
                 </Button>
               </div>
+              {__PREVIEW__ && (
+                <p className="text-center text-xs text-ink-3">
+                  O download só funciona no app rodando localmente — o visualizador desta prévia bloqueia
+                  downloads iniciados pela página. O vídeo acima é real e foi montado aqui no navegador.
+                </p>
+              )}
             </div>
           ) : (
             <EmptyState

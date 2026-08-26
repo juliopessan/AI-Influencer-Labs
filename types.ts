@@ -77,6 +77,12 @@ export interface SavedProjectState {
 }
 
 declare global {
+  /**
+   * True only in the preview build published as an Artifact, whose sandbox
+   * blocks page-initiated downloads. Replaced at build time by Vite.
+   */
+  const __PREVIEW__: boolean;
+
   interface AIStudio {
     hasSelectedApiKey: () => Promise<boolean>;
     openSelectKey: () => Promise<void>;

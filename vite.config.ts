@@ -18,7 +18,9 @@ export default defineConfig(({ mode }) => {
         // Falls back to '' so a missing key compiles to a falsy literal rather
         // than the bare identifier `undefined`, which would throw at runtime.
         'process.env.API_KEY': JSON.stringify(apiKey),
-        'process.env.GEMINI_API_KEY': JSON.stringify(apiKey)
+        'process.env.GEMINI_API_KEY': JSON.stringify(apiKey),
+        // Only the sandboxed preview build turns this on.
+        __PREVIEW__: 'false'
       },
       build: {
         // jsPDF + html2canvas are dynamically imported by the briefing export,
