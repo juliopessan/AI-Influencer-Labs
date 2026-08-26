@@ -18,6 +18,7 @@ Outros comandos:
 | Comando             | O que faz                                  |
 | ------------------- | ------------------------------------------ |
 | `npm run typecheck` | Checagem de tipos (`tsc --noEmit`)         |
+| `npm test`          | Testes unitários (vitest)                  |
 | `npm run build`     | Typecheck + build de produção em `dist/`   |
 | `npm run preview`   | Serve o build de produção                  |
 
@@ -76,6 +77,22 @@ toggle "Consistência de Personagem".
 simultâneas. `VIDEO_RENDER_CONCURRENCY` (padrão 2) controla quantas cenas rodam
 ao mesmo tempo.
 
+**Falhas têm código, não texto.** Todo erro passa por `classifyFailure` em
+[`services/failures.ts`](services/failures.ts) e vira um `code` estável
+(`RATE_LIMIT`, `QUOTA`, `SERVER`, `EMPTY_RESPONSE`, …). Retry, mensagem ao
+usuário e estorno de crédito decidem pelo código, nunca pelo texto da mensagem.
+Isso separa dois casos que compartilham o mesmo HTTP 429: throttling por minuto,
+que vale repetir, e saldo esgotado, que falha igual em toda tentativa. O backoff
+é exponencial com teto e jitter simétrico, e respeita o `RetryInfo`/`Retry-After`
+que a API devolve — se o provedor pedir mais que o teto, o app desiste e avisa em
+vez de deixar o usuário esperando.
+
+> O desenho dessa camada foi adaptado do
+> [DeepSeek Harness](https://github.com/deepseek-ai/deepseek-harness) (MIT),
+> especificamente de `@deepseek-ai/dsh-llm`: a regra de rotear por código e não
+> por mensagem, a política de backoff e a distinção entre cota terminal e
+> throttling transitório.
+
 **Créditos.** O custo total é debitado antes de começar, para a confirmação
 mostrar um valor exato, e devolvido por cena que falhar. Cenas com erro podem ser
 refeitas isoladamente, pagando só por elas.
@@ -93,7 +110,9 @@ Ver [`services/videoMerger.ts`](services/videoMerger.ts).
 App.tsx                    Orquestração do pipeline e estado do projeto
 constants.ts               Custos, limites, timeouts e concorrência
 types.ts                   Tipos compartilhados
-services/geminiService.ts  Os 7 agentes, retries e tradução de erros
+services/geminiService.ts  Os 7 agentes e o laço de retry
+services/failures.ts       Taxonomia de falhas, backoff e mensagens ao usuário
+services/failures.spec.ts  Testes da taxonomia e da política de retry
 services/videoMerger.ts    Montagem do corte final (canvas + MediaRecorder)
 utils/files.ts             Conversões de arquivo e limitador de concorrência
 components/                UI

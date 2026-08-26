@@ -3,11 +3,23 @@ import {
   GoogleGenAI,
   Type,
   GenerateContentResponse,
-  ApiError,
   VideoGenerationReferenceType,
 } from "@google/genai";
 import { ScriptChunk, VideoStyle, ScriptMode, AspectRatio, SocialContentGenerated, ImagePayload } from "../types";
 import { MAX_CHUNKS, CHUNK_DURATION, VIDEO_POLL_INTERVAL_MS, VIDEO_POLL_TIMEOUT_MS } from "../constants";
+import {
+  DEFAULT_RETRY_POLICY,
+  RetryPolicy,
+  classifyFailure,
+  decideRetry,
+  emptyResponseError,
+  humanizeError,
+  isRetryable,
+  sleep,
+} from "./failures";
+
+export { humanizeError } from "./failures";
+export type { Failure, FailureCode } from "./failures";
 
 // --- Client -----------------------------------------------------------------
 
@@ -41,94 +53,64 @@ function getClient(): GoogleGenAI {
   return cachedClient.client;
 }
 
-// --- Error handling ---------------------------------------------------------
-
-const TRANSIENT_STATUS = new Set([429, 500, 502, 503, 504]);
+// --- Retry ------------------------------------------------------------------
 
 /**
- * Extracts an HTTP status from the shapes involved: ApiError from the SDK, the
- * REST envelope `{ error: { code } }`, and the flat `{ code, message }` carried
- * on a failed long-running operation.
+ * Runs `fn`, repeating it while the failure is classified as transient.
+ *
+ * Every decision — retry or not, and how long to wait — comes from the failure
+ * taxonomy in `./failures`, which routes on the failure's stable code rather
+ * than on the text of its message.
  */
-function statusOf(error: unknown): number | null {
-  if (error instanceof ApiError && typeof error.status === "number") return error.status;
-  const anyErr = error as any;
-  if (typeof anyErr?.status === "number") return anyErr.status;
-  if (typeof anyErr?.error?.code === "number") return anyErr.error.code;
-  if (typeof anyErr?.code === "number") return anyErr.code;
-  return null;
-}
-
-function messageOf(error: unknown): string {
-  const anyErr = error as any;
-  if (anyErr?.error?.message) return String(anyErr.error.message);
-  if (error instanceof Error) return error.message;
-  if (typeof error === "string") return error;
-  if (typeof anyErr?.message === "string") return anyErr.message;
-  try {
-    return JSON.stringify(error);
-  } catch {
-    return String(error);
-  }
-}
-
-/**
- * A request is worth retrying when the status says so. Status is not always
- * available (network failures, errors re-thrown as plain strings), so fall back
- * to matching the codes the API embeds in its message.
- */
-function isTransient(error: unknown): boolean {
-  const status = statusOf(error);
-  if (status !== null) return TRANSIENT_STATUS.has(status);
-
-  const msg = messageOf(error);
-  return /\b(429|500|502|503|504)\b|UNAVAILABLE|RESOURCE_EXHAUSTED|overloaded|Failed to fetch|NetworkError/i.test(msg);
-}
-
-/** Turns any API failure into a message a non-technical user can act on. */
-export function humanizeError(error: unknown): string {
-  const status = statusOf(error);
-  const msg = messageOf(error);
-
-  if (status === 429 || /RESOURCE_EXHAUSTED/i.test(msg)) {
-    return "Cota da API excedida. Verifique os limites do seu projeto no Google AI Studio.";
-  }
-  if (status === 503 || /overloaded|UNAVAILABLE/i.test(msg)) {
-    return "O modelo está sobrecarregado no momento. Tente novamente em alguns instantes.";
-  }
-  if (status === 404 || /Requested entity was not found/i.test(msg)) {
-    return "Modelo não encontrado. O Veo exige um projeto do Google Cloud com faturamento habilitado (Paid Tier).";
-  }
-  if (status === 403 || /PERMISSION_DENIED|API key not valid/i.test(msg)) {
-    return "Chave de API inválida ou sem permissão para este modelo.";
-  }
-  if (status === 400 && /SAFETY|blocked/i.test(msg)) {
-    return "O conteúdo foi bloqueado pelos filtros de segurança. Ajuste o roteiro ou as imagens e tente de novo.";
-  }
-  return msg || "Ocorreu um erro desconhecido ao falar com a API.";
-}
-
-const sleep = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
-
-async function retryWithBackoff<T>(fn: () => Promise<T>, retries = 5, baseDelay = 3000): Promise<T> {
-  let lastError: unknown;
-  for (let attempt = 0; attempt < retries; attempt++) {
+async function retryWithBackoff<T>(
+  fn: () => Promise<T>,
+  policy: RetryPolicy = DEFAULT_RETRY_POLICY,
+  signal?: AbortSignal
+): Promise<T> {
+  for (let attempt = 0; ; attempt++) {
     try {
       return await fn();
     } catch (error) {
-      lastError = error;
-      if (!isTransient(error)) throw error;
+      const decision = decideRetry(error, attempt, policy);
+      if (decision.kind === "give-up") throw error;
 
-      if (attempt < retries - 1) {
-        const delay = baseDelay * 2 ** attempt + Math.random() * 1000;
-        console.warn(
-          `API indisponível (${messageOf(error)}). Nova tentativa em ${Math.round(delay)}ms (${attempt + 1}/${retries}).`
-        );
-        await sleep(delay);
-      }
+      console.warn(
+        `[${decision.failure.code}] ${decision.failure.message} — nova tentativa em ` +
+          `${Math.round(decision.delayMs)}ms (${attempt + 1}/${policy.maxRetries}).`
+      );
+      await sleep(decision.delayMs, signal);
+      if (signal?.aborted) throw error;
     }
   }
-  throw lastError;
+}
+
+type Part = { text: string } | { inlineData: ImagePayload };
+
+/**
+ * One text-producing model call, retried as a unit.
+ *
+ * The empty-content check lives inside the retried closure on purpose: a
+ * completion that stops with no output is a degenerate provider response, not a
+ * permanent failure, so it is classified as EMPTY_RESPONSE and repeated instead
+ * of aborting the run.
+ */
+async function generateText(
+  model: string,
+  parts: Part[],
+  what: string,
+  config?: Record<string, unknown>
+): Promise<string> {
+  const ai = getClient();
+  return retryWithBackoff(async () => {
+    const response: GenerateContentResponse = await ai.models.generateContent({
+      model,
+      contents: { parts },
+      ...(config ? { config } : {}),
+    });
+    const text = response.text?.trim();
+    if (!text) throw emptyResponseError(what);
+    return text;
+  });
 }
 
 // --- Schemas ----------------------------------------------------------------
@@ -195,7 +177,6 @@ const stylePrompts: Record<VideoStyle, string> = {
 
 /** Casting agent: turns a reference photo into a reusable character blueprint. */
 export async function generateInfluencerPersona(image: ImagePayload): Promise<string> {
-  const ai = getClient();
 
   const prompt = `Você é um Engenheiro de Prompts Mestre, especializado em criar "blueprints" de personagens para IAs de vídeo e avatares. Sua tarefa é analisar a imagem de uma influenciadora e destilar sua essência em um prompt técnico e evocativo que servirá de base para criar sua versão digital.
 
@@ -225,16 +206,7 @@ Sintetize TODAS as informações dos Passos 1 e 2 em um **único parágrafo dens
 
 **Idioma:** A saída final (o Master Prompt) deve ser em **Português do Brasil (PT-BR)**. Responda APENAS com o Master Prompt final.`;
 
-  const response = await retryWithBackoff<GenerateContentResponse>(() =>
-    ai.models.generateContent({
-      model: "gemini-2.5-flash",
-      contents: { parts: [{ inlineData: image }, { text: prompt }] },
-    })
-  );
-
-  const text = response.text?.trim();
-  if (!text) throw new Error("A API não retornou a descrição da persona.");
-  return text;
+  return generateText("gemini-2.5-flash", [{ inlineData: image }, { text: prompt }], "a descrição da persona");
 }
 
 /** Strategist agent: reads the product (and logo) and writes the campaign brief. */
@@ -242,7 +214,6 @@ export async function generateCampaignBriefing(
   productImage: ImagePayload,
   logoImage: ImagePayload | null
 ): Promise<string> {
-  const ai = getClient();
 
   const prompt = `Atue como um estrategista de marketing digital. Analise a imagem do produto fornecida${
     logoImage ? " e o logotipo da marca que a acompanha" : ""
@@ -267,13 +238,7 @@ Seja direto e criativo. Responda em Português do Brasil (PT-BR).`;
   }
   parts.push({ text: prompt });
 
-  const response = await retryWithBackoff<GenerateContentResponse>(() =>
-    ai.models.generateContent({ model: "gemini-2.5-flash", contents: { parts } })
-  );
-
-  const text = response.text?.trim();
-  if (!text) throw new Error("A API não retornou o briefing da campanha.");
-  return text;
+  return generateText("gemini-2.5-flash", parts, "o briefing da campanha");
 }
 
 /**
@@ -282,7 +247,6 @@ Seja direto e criativo. Responda em Português do Brasil (PT-BR).`;
  * the URL — this is style guidance, not a transcript of that specific video.
  */
 export async function analyzeReferenceStyle(referenceUrl: string): Promise<string> {
-  const ai = getClient();
 
   const prompt = `Atue como um diretor criativo especializado em vídeo social de formato curto.
 
@@ -299,13 +263,7 @@ Produza um guia de direção curto (máximo 6 linhas), uma diretriz por linha, c
 
 Formato: texto puro, uma diretriz por linha, começando com "> ". Sem markdown, sem introdução. Idioma: Português do Brasil.`;
 
-  const response = await retryWithBackoff<GenerateContentResponse>(() =>
-    ai.models.generateContent({ model: "gemini-2.5-flash", contents: { parts: [{ text: prompt }] } })
-  );
-
-  const text = response.text?.trim();
-  if (!text) throw new Error("A API não retornou a análise de estilo.");
-  return text;
+  return generateText("gemini-2.5-flash", [{ text: prompt }], "a análise de estilo");
 }
 
 /** Screenwriter agent: builds the linear, N-act script. */
@@ -318,7 +276,6 @@ export async function generateScript(
   referenceUrl: string | null,
   styleAnalysis?: string | null
 ): Promise<ScriptChunk[]> {
-  const ai = getClient();
 
   let model: string;
   const config: {
@@ -408,14 +365,7 @@ Sua saída final DEVE ser um objeto JSON com a chave 'script'. Responda APENAS c
   }
   parts.push({ text: prompt });
 
-  const response = await retryWithBackoff<GenerateContentResponse>(() =>
-    ai.models.generateContent({ model, contents: { parts }, config })
-  );
-
-  const jsonText = response.text?.trim();
-  if (!jsonText) {
-    throw new Error("A API não retornou texto no roteiro.");
-  }
+  const jsonText = await generateText(model, parts, "texto no roteiro", config);
 
   let parsed: { script?: unknown };
   try {
@@ -444,7 +394,6 @@ export async function generateSocialContent(
   script: ScriptChunk[],
   referenceUrl: string | null
 ): Promise<SocialContentGenerated> {
-  const ai = getClient();
 
   const scriptContent = script
     .map((s, i) => `[Cena ${i + 1}]: ${s.scene}\n(Narração): ${s.narration}`)
@@ -465,18 +414,10 @@ Regras:
 - Conteúdo envolvente, pronto para viralizar, com emojis relevantes.
 - Idioma: Português do Brasil (PT-BR).`;
 
-  const response = await retryWithBackoff<GenerateContentResponse>(() =>
-    ai.models.generateContent({
-      model: "gemini-2.5-flash",
-      contents: { parts: [{ text: prompt }] },
-      config: { responseMimeType: "application/json", responseSchema: socialContentSchema },
-    })
-  );
-
-  const jsonText = response.text?.trim();
-  if (!jsonText) {
-    throw new Error("A API não retornou conteúdo social.");
-  }
+  const jsonText = await generateText("gemini-2.5-flash", [{ text: prompt }], "conteúdo social", {
+    responseMimeType: "application/json",
+    responseSchema: socialContentSchema,
+  });
   const parsed = JSON.parse(jsonText) as SocialContentGenerated;
   // Normalize so the UI can map over hashtags unconditionally.
   for (const post of [parsed.instagram, parsed.tiktok, parsed.youtube]) {
@@ -496,7 +437,6 @@ export async function optimizeVeoPrompt(
   style: VideoStyle,
   characterDescription: string
 ): Promise<string> {
-  const ai = getClient();
   const styleInstructions = stylePrompts[style] ?? stylePrompts.cinematic;
 
   const prompt = `Atue como um Engenheiro de Prompt especialista em Vídeo AI (Google Veo).
@@ -520,12 +460,15 @@ Sua tarefa é converter uma descrição de cena em um prompt técnico e detalhad
 
 Retorne APENAS o texto do prompt, sem aspas envolventes e sem explicações.`;
 
-  const response = await retryWithBackoff<GenerateContentResponse>(() =>
-    ai.models.generateContent({ model: "gemini-2.5-flash", contents: { parts: [{ text: prompt }] } })
-  );
-
-  const optimized = response.text?.trim();
-  return optimized && optimized.length > 0 ? optimized : buildFallbackVeoPrompt(chunk, style, characterDescription);
+  try {
+    return await generateText("gemini-2.5-flash", [{ text: prompt }], "o prompt otimizado");
+  } catch (error) {
+    // The director agent only sharpens the prompt. If it stays unavailable after
+    // its retries, render from the deterministic prompt rather than losing the
+    // scene — the narration is already baked into the fallback.
+    console.warn(`Otimização de prompt indisponível (${classifyFailure(error).code}); usando o prompt padrão.`);
+    return buildFallbackVeoPrompt(chunk, style, characterDescription);
+  }
 }
 
 /** Deterministic prompt used when the director agent is unavailable. */
@@ -599,7 +542,7 @@ export async function generateVideoForChunk(chunk: ScriptChunk, options: VideoRe
   } catch (error) {
     // Reference images are not available on every model tier or region. Rather
     // than failing the scene, fall back to the text-only prompt.
-    if (characterImage && statusOf(error) === 400) {
+    if (characterImage && classifyFailure(error).status === 400) {
       console.warn("Referência de personagem rejeitada pelo modelo; renderizando somente com texto.");
       onProgress?.("Referência de personagem indisponível, usando apenas texto");
       operation = await startGeneration(false);
@@ -626,7 +569,7 @@ export async function generateVideoForChunk(chunk: ScriptChunk, options: VideoRe
       operation = await ai.operations.getVideosOperation({ operation });
       consecutivePollFailures = 0;
     } catch (pollError) {
-      if (!isTransient(pollError)) throw pollError;
+      if (!isRetryable(classifyFailure(pollError))) throw pollError;
       // A transient poll failure does not mean the job died — keep waiting, but
       // give up if the API stays unreachable.
       if (++consecutivePollFailures >= 6) {
@@ -655,7 +598,11 @@ export async function generateVideoForChunk(chunk: ScriptChunk, options: VideoRe
       signal,
     });
     if (!res.ok && (res.status === 429 || res.status >= 500)) {
-      throw new ApiError({ message: `Download falhou: ${res.statusText}`, status: res.status });
+      // Rethrown so the classifier sees the status and the Retry-After header.
+      throw Object.assign(new Error(`Download falhou: ${res.statusText}`), {
+        status: res.status,
+        headers: res.headers,
+      });
     }
     return res;
   });
