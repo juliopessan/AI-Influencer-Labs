@@ -1,0 +1,6 @@
+{
+  "name": "Influencer Labs",
+  "description": "Um aplicativo para gerar roteiros de vídeo usando IA e, em seguida, criar videoclipes para cada cena. O vídeo final é uma compilação de todos os clipes gerados.",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}
