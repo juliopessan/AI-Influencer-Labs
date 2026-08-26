@@ -1,0 +1,64 @@
+{
+  "$schema": "./node_modules/oxlint/configuration_schema.json",
+  "plugins": ["typescript", "react", "react-perf", "unicorn", "promise"],
+  "categories": {
+    "correctness": "error"
+  },
+  "env": {
+    "browser": true,
+    "es2022": true
+  },
+  "ignorePatterns": ["dist/**", "node_modules/**", "**/*.config.ts", "**/*.config.js"],
+  "rules": {
+    "no-var": "error",
+    "prefer-const": "error",
+    "no-array-constructor": "error",
+    "no-unused-expressions": "error",
+    "no-unused-vars": [
+      "error",
+      {
+        "argsIgnorePattern": "^_",
+        "varsIgnorePattern": "^_",
+        "caughtErrorsIgnorePattern": "^_"
+      }
+    ],
+    "typescript/ban-ts-comment": ["error", { "minimumDescriptionLength": 10 }],
+    "typescript/no-duplicate-enum-values": "error",
+    "typescript/no-extra-non-null-assertion": "error",
+    "typescript/no-misused-new": "error",
+    "typescript/no-non-null-asserted-nullish-coalescing": "error",
+    "typescript/no-non-null-asserted-optional-chain": "error",
+    "typescript/no-require-imports": "error",
+    "typescript/no-this-alias": "error",
+    "typescript/no-unnecessary-type-constraint": "error",
+    "typescript/no-unsafe-declaration-merging": "error",
+    "typescript/no-unsafe-function-type": "error",
+    "typescript/no-wrapper-object-types": "error",
+    "typescript/prefer-as-const": "error",
+    "typescript/triple-slash-reference": "error",
+
+    "react/exhaustive-deps": "error",
+    "react/rules-of-hooks": "error",
+    "react/no-danger-with-children": "error",
+    "react/jsx-key": "error",
+    "react/void-dom-elements-no-children": "error",
+
+    "promise/no-return-wrap": "error",
+    "promise/param-names": "error",
+
+    "unicorn/no-await-in-promise-methods": "error",
+    "unicorn/no-invalid-remove-event-listener": "error",
+    "unicorn/no-single-promise-in-promise-methods": "error",
+    "unicorn/no-useless-promise-resolve-reject": "error",
+    "unicorn/prefer-add-event-listener": "error",
+    "unicorn/prefer-dom-node-remove": "error"
+  },
+  "overrides": [
+    {
+      "files": ["**/*.spec.ts"],
+      "rules": {
+        "typescript/no-explicit-any": "off"
+      }
+    }
+  ]
+}

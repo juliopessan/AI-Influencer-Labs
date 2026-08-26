@@ -1,332 +1,366 @@
-
-import React, { useState, useCallback, useEffect, useRef } from 'react';
-import { Script, VideoChunk, VideoStyle, ScriptMode, AspectRatio, SavedProjectState, SocialContentGenerated } from './types';
-import { INITIAL_CREDITS, SCRIPT_GENERATION_COST, VIDEO_CHUNK_GENERATION_COST, MAX_CHUNKS } from './constants';
-import { generateScript, generateVideoForChunk, generateInfluencerPersona, generateCampaignBriefing, generateSocialContent, optimizeVeoPrompt } from './services/geminiService';
+import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import {
+  AspectRatio,
+  ImagePayload,
+  SavedProjectState,
+  Script,
+  ScriptChunk,
+  ScriptMode,
+  SocialContentGenerated,
+  StepId,
+  VideoChunk,
+  VideoStyle,
+} from './types';
+import {
+  INITIAL_CREDITS,
+  SCRIPT_GENERATION_COST,
+  TRANSITION_DURATION_MS,
+  VIDEO_CHUNK_GENERATION_COST,
+  VIDEO_RENDER_CONCURRENCY,
+} from './constants';
+import {
+  analyzeReferenceStyle,
+  analyzeReferenceVideo,
+  generateCampaignBriefing,
+  generateInfluencerPersona,
+  generateScript,
+  generateSocialContent,
+  generateVideoForChunk,
+  hasApiKey,
+  humanizeError,
+  optimizeVeoPrompt,
+} from './services/geminiService';
+import { mergeVideoClips } from './services/videoMerger';
+import { exportBriefingPdf } from './services/briefingPdf';
+import { dataUrlToFile, fileToDataUrl, fileToMediaPayload, mapWithConcurrency } from './utils/files';
 import Header from './components/Header';
-import ScriptGenerator from './components/ScriptGenerator';
-import ScriptEditor from './components/ScriptEditor';
-import VideoDisplay from './components/VideoDisplay';
-import { Loader } from './components/Loader';
+import { StepDescriptor, StepFooter, Stepper } from './components/Stepper';
+import { PersonaStep } from './components/steps/PersonaStep';
+import { CampaignStep } from './components/steps/CampaignStep';
+import { ScriptStep } from './components/steps/ScriptStep';
+import { ProductionStep } from './components/steps/ProductionStep';
+import { DeliveryStep } from './components/steps/DeliveryStep';
+import { Button, Notice, Spinner } from './components/ui';
 
-const TRANSITION_DURATION_MS = 1000; // 1 second cross-dissolve
-const TEST_URL = "https://www.tiktok.com/@stylebyassitan/video/7402182344464928032?is_from_webapp=1&sender_device=pc&web_id=7568213656002709008";
 const LOCAL_STORAGE_KEY = 'influencer_labs_project';
+const PROJECT_FORMAT_VERSION = 2;
 
-// Toast Component
-const Toast: React.FC<{ message: string; type: 'success' | 'error' | 'info'; onClose: () => void }> = ({ message, type, onClose }) => {
-    useEffect(() => {
-        const timer = setTimeout(onClose, 3000);
-        return () => clearTimeout(timer);
-    }, [onClose]);
+const STEP_ORDER: ReadonlyArray<{ id: StepId; label: string; title: string; lead: string }> = [
+  {
+    id: 'persona',
+    label: 'Persona',
+    title: 'Quem é a influencer',
+    lead: 'Uma foto define a aparência que todas as cenas vão manter.',
+  },
+  {
+    id: 'campanha',
+    label: 'Campanha',
+    title: 'O que ela vai divulgar',
+    lead: 'Produto, marca e o contexto que orienta o roteiro.',
+  },
+  {
+    id: 'roteiro',
+    label: 'Roteiro',
+    title: 'O que ela vai dizer',
+    lead: 'Seis cenas de oito segundos, em arco contínuo.',
+  },
+  {
+    id: 'producao',
+    label: 'Produção',
+    title: 'Como o vídeo é gerado',
+    lead: 'Estilo, formato e a renderização cena a cena.',
+  },
+  {
+    id: 'entrega',
+    label: 'Entrega',
+    title: 'O que sai daqui',
+    lead: 'Vídeo final montado e legendas prontas para publicar.',
+  },
+];
 
-    const bgColors = {
-        success: 'bg-green-500/20 border-green-500 text-green-400',
-        error: 'bg-red-500/20 border-red-500 text-red-400',
-        info: 'bg-cyan-500/20 border-cyan-500 text-cyan-400',
-    };
+type ToastState = { message: string; tone: 'ok' | 'danger' | 'neutral' };
 
-    return (
-        <div className={`fixed top-24 right-8 z-[100] px-6 py-4 rounded-xl border backdrop-blur-md shadow-2xl flex items-center animate-fade-in-up ${bgColors[type]}`}>
-            <span className="font-bold mr-2">{type === 'success' ? '✓' : type === 'error' ? '⚠' : 'ℹ'}</span>
-            {message}
-        </div>
-    );
+const Toast: React.FC<{ toast: ToastState; onClose: () => void }> = ({ toast, onClose }) => {
+  useEffect(() => {
+    const timer = setTimeout(onClose, 4000);
+    return () => clearTimeout(timer);
+  }, [toast, onClose]);
+
+  const tone =
+    toast.tone === 'ok'
+      ? 'border-ok/40 bg-ok/15 text-ok'
+      : toast.tone === 'danger'
+        ? 'border-danger/40 bg-danger/15 text-danger'
+        : 'border-line-strong bg-surface-3 text-ink';
+
+  return (
+    <div
+      role="status"
+      className={`fixed left-1/2 top-20 z-50 -translate-x-1/2 animate-rise-in rounded border px-4 py-2.5 text-sm shadow-lg ${tone}`}
+    >
+      {toast.message}
+    </div>
+  );
 };
 
-// Simple Canvas Confetti Component
-const Confetti: React.FC<{ trigger: boolean }> = ({ trigger }) => {
-    const canvasRef = useRef<HTMLCanvasElement>(null);
-
-    useEffect(() => {
-        if (!trigger || !canvasRef.current) return;
-        const canvas = canvasRef.current;
-        const ctx = canvas.getContext('2d');
-        if (!ctx) return;
-
-        canvas.width = window.innerWidth;
-        canvas.height = window.innerHeight;
-
-        const particles: any[] = [];
-        const colors = ['#06b6d4', '#7c3aed', '#ffffff', '#facc15'];
-
-        for (let i = 0; i < 100; i++) {
-            particles.push({
-                x: canvas.width / 2,
-                y: canvas.height / 2,
-                vx: (Math.random() - 0.5) * 20,
-                vy: (Math.random() - 0.5) * 20,
-                size: Math.random() * 5 + 2,
-                color: colors[Math.floor(Math.random() * colors.length)],
-                life: 100
-            });
-        }
-
-        const animate = () => {
-            if (!ctx) return;
-            ctx.clearRect(0, 0, canvas.width, canvas.height);
-            let active = false;
-            particles.forEach(p => {
-                if (p.life > 0) {
-                    active = true;
-                    p.x += p.vx;
-                    p.y += p.vy;
-                    p.vy += 0.2; // gravity
-                    p.life--;
-                    ctx.globalAlpha = p.life / 100;
-                    ctx.fillStyle = p.color;
-                    ctx.beginPath();
-                    ctx.arc(p.x, p.y, p.size, 0, Math.PI * 2);
-                    ctx.fill();
-                }
-            });
-            if (active) requestAnimationFrame(animate);
-            else ctx.clearRect(0, 0, canvas.width, canvas.height);
-        };
-        animate();
-
-    }, [trigger]);
-
-    return <canvas ref={canvasRef} className="fixed inset-0 pointer-events-none z-[100]" />;
-};
+type PreviewKind = 'influencer' | 'product' | 'logo';
 
 function App() {
-  const [credits, setCredits] = useState<number>(INITIAL_CREDITS);
-  
-  // Influencer State
+  const [credits, setCredits] = useState(INITIAL_CREDITS);
+  const [currentStep, setCurrentStep] = useState<StepId>('persona');
+
   const [influencerImageFile, setInfluencerImageFile] = useState<File | null>(null);
   const [characterDescription, setCharacterDescription] = useState<string | null>(null);
   const [isAnalyzingInfluencer, setIsAnalyzingInfluencer] = useState(false);
 
-  // Campaign State
-  const [topic, setTopic] = useState<string>('');
+  const [topic, setTopic] = useState('');
   const [productImageFile, setProductImageFile] = useState<File | null>(null);
   const [logoImageFile, setLogoImageFile] = useState<File | null>(null);
   const [isGeneratingBriefing, setIsGeneratingBriefing] = useState(false);
-  const [referenceUrl, setReferenceUrl] = useState<string>(TEST_URL);
+  const [referenceUrl, setReferenceUrl] = useState('');
+  const [referenceVideoFile, setReferenceVideoFile] = useState<File | null>(null);
+  const [referenceVideoPreview, setReferenceVideoPreview] = useState<string | null>(null);
+  const [styleAnalysis, setStyleAnalysis] = useState('');
+  const [isAnalyzingStyle, setIsAnalyzingStyle] = useState(false);
+  const [isExportingPdf, setIsExportingPdf] = useState(false);
 
-  // Script & Video State
+  // Previews live here rather than in the form: several steps show the same
+  // images, and a loaded project restores them without an upload event.
+  const [previews, setPreviews] = useState<Record<PreviewKind, string | null>>({
+    influencer: null,
+    product: null,
+    logo: null,
+  });
+
   const [script, setScript] = useState<Script | null>(null);
   const [videos, setVideos] = useState<VideoChunk[]>([]);
-  const [isLoadingScript, setIsLoadingScript] = useState<boolean>(false);
-  const [isGeneratingVideo, setIsGeneratingVideo] = useState<boolean>(false);
-  const [isMerging, setIsMerging] = useState<boolean>(false);
+  const [isLoadingScript, setIsLoadingScript] = useState(false);
+  const [isGeneratingVideo, setIsGeneratingVideo] = useState(false);
+  const [isMerging, setIsMerging] = useState(false);
+  const [mergeStage, setMergeStage] = useState('');
   const [mergedVideoUrl, setMergedVideoUrl] = useState<string | null>(null);
-  
+  const [mergedVideoExtension, setMergedVideoExtension] = useState('webm');
+
   const [error, setError] = useState<string | null>(null);
   const [videoStyle, setVideoStyle] = useState<VideoStyle>('cinematic');
   const [scriptMode, setScriptMode] = useState<ScriptMode>('balanced');
-  const [aspectRatio, setAspectRatio] = useState<AspectRatio>('16:9');
-  const [apiKeySelected, setApiKeySelected] = useState<boolean>(false);
-  const [checkingApiKey, setCheckingApiKey] = useState<boolean>(true);
-  const [showConfetti, setShowConfetti] = useState(false);
-  const [socialContent, setSocialContent] = useState<SocialContentGenerated | null>(null);
+  const [aspectRatio, setAspectRatio] = useState<AspectRatio>('9:16');
+  const [useCharacterReference, setUseCharacterReference] = useState(true);
+  const [confirmingRender, setConfirmingRender] = useState(false);
 
-  const [toast, setToast] = useState<{ message: string; type: 'success' | 'error' | 'info' } | null>(null);
-  const [canLoadProject, setCanLoadProject] = useState(false);
+  const [apiKeySelected, setApiKeySelected] = useState(false);
+  const [checkingApiKey, setCheckingApiKey] = useState(true);
+  const [socialContent, setSocialContent] = useState<SocialContentGenerated | null>(null);
+  const [toast, setToast] = useState<ToastState | null>(null);
+  const [canLoadProject, setCanLoadProject] = useState(() => {
+    try {
+      return localStorage.getItem(LOCAL_STORAGE_KEY) !== null;
+    } catch (e) {
+      console.warn('localStorage indisponível:', e);
+      return false;
+    }
+  });
+
+  const dismissToast = useCallback(() => setToast(null), []);
+
+  // --- Blob URL lifecycle ---------------------------------------------------
+
+  const objectUrlsRef = useRef<Set<string>>(new Set());
+
+  const trackObjectUrl = useCallback((url: string) => {
+    objectUrlsRef.current.add(url);
+    return url;
+  }, []);
+
+  const releaseAllObjectUrls = useCallback(() => {
+    for (const url of objectUrlsRef.current) URL.revokeObjectURL(url);
+    objectUrlsRef.current.clear();
+  }, []);
+
+  // Revoke any tracked URL state no longer references. Kept out of the state
+  // updaters so they stay free of side effects under StrictMode.
+  useEffect(() => {
+    const live = new Set<string>();
+    for (const video of videos) if (video.videoUrl) live.add(video.videoUrl);
+    if (mergedVideoUrl) live.add(mergedVideoUrl);
+
+    for (const url of objectUrlsRef.current) {
+      if (!live.has(url)) {
+        URL.revokeObjectURL(url);
+        objectUrlsRef.current.delete(url);
+      }
+    }
+  }, [videos, mergedVideoUrl]);
+
+  useEffect(() => releaseAllObjectUrls, [releaseAllObjectUrls]);
+
+  // --- API key --------------------------------------------------------------
 
   useEffect(() => {
-    const checkApiKey = async () => {
-        try {
-            if (window.aistudio && await window.aistudio.hasSelectedApiKey()) {
-                setApiKeySelected(true);
-            }
-        } catch (e) {
-            console.error("Error checking for API key:", e);
-        } finally {
-            setCheckingApiKey(false);
+    const check = async () => {
+      try {
+        if (hasApiKey()) {
+          setApiKeySelected(true);
+        } else if (window.aistudio && (await window.aistudio.hasSelectedApiKey())) {
+          setApiKeySelected(true);
         }
+      } catch (e) {
+        console.error('Error checking for API key:', e);
+      } finally {
+        setCheckingApiKey(false);
+      }
     };
-    checkApiKey();
-    
-    // Check for saved project
-    const saved = localStorage.getItem(LOCAL_STORAGE_KEY);
-    if (saved) setCanLoadProject(true);
+    void check();
   }, []);
 
   const handleSelectApiKey = async () => {
+    if (!window.aistudio) {
+      setError(
+        'Seletor de chave indisponível fora do AI Studio. Crie um arquivo .env na raiz do projeto com GEMINI_API_KEY=sua_chave e reinicie o servidor.'
+      );
+      return;
+    }
     try {
-      if (window.aistudio) {
-          await window.aistudio.openSelectKey();
-          setApiKeySelected(true);
-          setError(null);
-      }
+      await window.aistudio.openSelectKey();
+      setApiKeySelected(true);
+      setError(null);
     } catch (e) {
-      console.error("Error opening API key selection:", e);
-      setError("Não foi possível abrir o seletor de chave de API.");
+      console.error('Error opening API key selection:', e);
+      setError('Não foi possível abrir o seletor de chave de API.');
     }
   };
 
-  const fileToBase64 = (file: File): Promise<string> =>
-    new Promise((resolve, reject) => {
-        const reader = new FileReader();
-        reader.readAsDataURL(file);
-        reader.onload = () => {
-            const result = reader.result as string;
-            resolve(result); // Keep full data URL for saving
-        };
-        reader.onerror = reject;
-    });
-  
-  const base64ToFile = async (dataUrl: string, filename: string): Promise<File> => {
-      const res = await fetch(dataUrl);
-      const buf = await res.arrayBuffer();
-      const type = dataUrl.split(';')[0].split(':')[1];
-      return new File([buf], filename, { type });
-  };
+  // --- Image selection ------------------------------------------------------
 
-  const handleSaveProject = async () => {
-      try {
-          const influencerBase64 = influencerImageFile ? await fileToBase64(influencerImageFile) : null;
-          const productBase64 = productImageFile ? await fileToBase64(productImageFile) : null;
-          const logoBase64 = logoImageFile ? await fileToBase64(logoImageFile) : null;
+  const setPreview = useCallback((kind: PreviewKind, value: string | null) => {
+    setPreviews((prev) => ({ ...prev, [kind]: value }));
+  }, []);
 
-          const projectState: SavedProjectState = {
-              timestamp: Date.now(),
-              topic,
-              characterDescription,
-              script,
-              credits,
-              referenceUrl,
-              videoStyle,
-              scriptMode,
-              aspectRatio,
-              socialContent,
-              influencerImageBase64: influencerBase64,
-              productImageBase64: productBase64,
-              logoImageBase64: logoBase64
-          };
+  const selectReferenceVideo = useCallback(
+    (file: File | null) => {
+      setReferenceVideoFile(file);
+      setStyleAnalysis('');
+      // A data URL for a multi-megabyte video would be wasteful; the preview
+      // only needs a handle to the local file.
+      setReferenceVideoPreview((previous) => {
+        if (previous) URL.revokeObjectURL(previous);
+        return file ? URL.createObjectURL(file) : null;
+      });
+    },
+    []
+  );
 
-          localStorage.setItem(LOCAL_STORAGE_KEY, JSON.stringify(projectState));
-          setCanLoadProject(true);
-          setToast({ message: "Projeto salvo com sucesso!", type: "success" });
-      } catch (e: any) {
-          console.error("Erro ao salvar projeto:", e);
-          if (e.name === 'QuotaExceededError') {
-              setToast({ message: "Erro: Imagens muito grandes para salvar no navegador.", type: "error" });
-          } else {
-              setToast({ message: "Falha ao salvar o projeto.", type: "error" });
-          }
+  const selectImage = useCallback(
+    (kind: PreviewKind, file: File | null, onReady?: (file: File) => void) => {
+      const setFile =
+        kind === 'influencer'
+          ? setInfluencerImageFile
+          : kind === 'product'
+            ? setProductImageFile
+            : setLogoImageFile;
+
+      setFile(file);
+      if (!file) {
+        setPreview(kind, null);
+        return;
       }
-  };
 
-  const handleLoadProject = async () => {
-      try {
-          const saved = localStorage.getItem(LOCAL_STORAGE_KEY);
-          if (!saved) return;
+      void fileToDataUrl(file)
+        .then((dataUrl) => {
+          setPreview(kind, dataUrl);
+          onReady?.(file);
+        })
+        .catch(() => setError('Não foi possível ler o arquivo selecionado.'));
+    },
+    [setPreview]
+  );
 
-          const data: SavedProjectState = JSON.parse(saved);
+  // --- Agents ---------------------------------------------------------------
 
-          setTopic(data.topic);
-          setCharacterDescription(data.characterDescription);
-          setCredits(data.credits);
-          setReferenceUrl(data.referenceUrl);
-          setVideoStyle(data.videoStyle);
-          setScriptMode(data.scriptMode);
-          setAspectRatio(data.aspectRatio);
-          setSocialContent(data.socialContent);
+  const analyzeInfluencer = useCallback(async (file: File) => {
+    setIsAnalyzingInfluencer(true);
+    setError(null);
+    try {
+      setCharacterDescription(await generateInfluencerPersona(await fileToMediaPayload(file)));
+    } catch (e) {
+      console.error(e);
+      setError(`Erro ao analisar a imagem da influencer. ${humanizeError(e)}`);
+    } finally {
+      setIsAnalyzingInfluencer(false);
+    }
+  }, []);
 
-          // Restore Files
-          if (data.influencerImageBase64) {
-              const file = await base64ToFile(data.influencerImageBase64, "influencer_restored.png");
-              setInfluencerImageFile(file);
-          }
-          if (data.productImageBase64) {
-              const file = await base64ToFile(data.productImageBase64, "product_restored.png");
-              setProductImageFile(file);
-          }
-          if (data.logoImageBase64) {
-              const file = await base64ToFile(data.logoImageBase64, "logo_restored.png");
-              setLogoImageFile(file);
-          }
+  const handleGenerateBriefing = useCallback(async () => {
+    if (!productImageFile) return;
+    setIsGeneratingBriefing(true);
+    setError(null);
+    try {
+      const product = await fileToMediaPayload(productImageFile);
+      const logo = logoImageFile ? await fileToMediaPayload(logoImageFile) : null;
+      setTopic(await generateCampaignBriefing(product, logo));
+    } catch (e) {
+      console.error(e);
+      setError(`Erro ao gerar o briefing da campanha. ${humanizeError(e)}`);
+    } finally {
+      setIsGeneratingBriefing(false);
+    }
+  }, [productImageFile, logoImageFile]);
 
-          // Restore Script & Reset Videos
-          if (data.script) {
-              setScript(data.script);
-              // We cannot restore generated video BLOBS from localStorage (too big)
-              // So we restore the slots but reset status to pending if they were done
-              const restoredVideos = data.script.map(chunk => ({
-                  id: chunk.id,
-                  scriptChunk: chunk,
-                  videoUrl: null, // Cannot persist blobs
-                  status: 'pending' as const,
-                  optimizedPrompt: undefined
-              }));
-              setVideos(restoredVideos);
-              if (data.script.length > 0) {
-                  setToast({ message: "Projeto carregado! Os vídeos precisam ser renderizados novamente.", type: "info" });
-              } else {
-                  setToast({ message: "Projeto carregado com sucesso!", type: "success" });
-              }
-          } else {
-              setToast({ message: "Projeto carregado com sucesso!", type: "success" });
-          }
+  const handleAnalyzeStyle = useCallback(async () => {
+    if (!referenceUrl.trim()) return;
+    setIsAnalyzingStyle(true);
+    setError(null);
+    try {
+      setStyleAnalysis(await analyzeReferenceStyle(referenceUrl.trim()));
+    } catch (e) {
+      console.error(e);
+      setError(`Erro ao analisar a referência de estilo. ${humanizeError(e)}`);
+    } finally {
+      setIsAnalyzingStyle(false);
+    }
+  }, [referenceUrl]);
 
-      } catch (e) {
-          console.error("Erro ao carregar projeto:", e);
-          setToast({ message: "Arquivo de projeto corrompido ou inválido.", type: "error" });
-      }
-  };
+  /**
+   * The video path is the accurate one: Omni actually watches the clip, while
+   * the URL path can only reason about the platform in the link.
+   */
+  const handleAnalyzeReferenceVideo = useCallback(async () => {
+    if (!referenceVideoFile) return;
+    setIsAnalyzingStyle(true);
+    setError(null);
+    try {
+      const payload = await fileToMediaPayload(referenceVideoFile, 'video/mp4');
+      setStyleAnalysis(await analyzeReferenceVideo(payload, referenceUrl.trim() || null));
+    } catch (e) {
+      console.error(e);
+      setError(`Erro ao analisar o vídeo de referência. ${humanizeError(e)}`);
+    } finally {
+      setIsAnalyzingStyle(false);
+    }
+  }, [referenceVideoFile, referenceUrl]);
 
-  // Step 1: Analyze Influencer
-  const handleAnalyzeInfluencer = async (file: File) => {
-      setIsAnalyzingInfluencer(true);
-      setError(null);
-      try {
-          const base64Full = await fileToBase64(file);
-          const base64Data = base64Full.split(',')[1];
-          const description = await generateInfluencerPersona({ data: base64Data, mimeType: file.type });
-          setCharacterDescription(description);
-      } catch (e) {
-          setError("Erro ao analisar a imagem da influencer.");
-          console.error(e);
-      } finally {
-          setIsAnalyzingInfluencer(false);
-      }
-  };
-
-  // Step 2: Auto-Generate Briefing
-  const handleAutoGenerateBriefing = async () => {
-      if (!productImageFile) return;
-      setIsGeneratingBriefing(true);
-      setError(null);
-      try {
-          const productBase64Full = await fileToBase64(productImageFile);
-          const productBase64Data = productBase64Full.split(',')[1];
-          let logoData = null;
-          
-          if (logoImageFile) {
-              const logoBase64Full = await fileToBase64(logoImageFile);
-              const logoBase64Data = logoBase64Full.split(',')[1];
-              logoData = { data: logoBase64Data, mimeType: logoImageFile.type };
-          }
-          
-          const briefing = await generateCampaignBriefing(
-              { data: productBase64Data, mimeType: productImageFile.type },
-              logoData
-          );
-          setTopic(briefing);
-      } catch (e) {
-           setError("Erro ao gerar o briefing da campanha.");
-           console.error(e);
-      } finally {
-          setIsGeneratingBriefing(false);
-      }
-  };
+  const handleExportPdf = useCallback(async () => {
+    if (!topic || isExportingPdf) return;
+    setIsExportingPdf(true);
+    try {
+      await exportBriefingPdf({
+        topic,
+        characterDescription,
+        referenceUrl,
+        styleAnalysis,
+        influencerPreview: previews.influencer,
+        logoPreview: previews.logo,
+      });
+    } catch (e) {
+      console.error(e);
+      setError('Não foi possível gerar o PDF do briefing.');
+    } finally {
+      setIsExportingPdf(false);
+    }
+  }, [topic, isExportingPdf, characterDescription, referenceUrl, styleAnalysis, previews]);
 
   const handleGenerateScript = useCallback(async () => {
-    if (credits < SCRIPT_GENERATION_COST) {
-      setError("Créditos insuficientes para gerar um roteiro.");
-      return;
-    }
-    if (!productImageFile) {
-      setError("Por favor, envie uma imagem do produto para gerar o roteiro.");
-      return;
-    }
-    if (!characterDescription) {
-        setError("Por favor, envie uma foto da influencer primeiro.");
-        return;
-    }
+    if (!productImageFile || !characterDescription || credits < SCRIPT_GENERATION_COST) return;
 
     setIsLoadingScript(true);
     setError(null);
@@ -336,350 +370,336 @@ function App() {
     setSocialContent(null);
 
     try {
-      const productBase64Full = await fileToBase64(productImageFile);
-      const productImageData = {
-        data: productBase64Full.split(',')[1],
-        mimeType: productImageFile.type,
-      };
-      
-      let logoImageData: { data: string; mimeType: string } | null = null;
-      if (logoImageFile) {
-        const logoBase64Full = await fileToBase64(logoImageFile);
-        logoImageData = {
-          data: logoBase64Full.split(',')[1],
-          mimeType: logoImageFile.type,
-        };
-      }
+      const product = await fileToMediaPayload(productImageFile);
+      const logo = logoImageFile ? await fileToMediaPayload(logoImageFile) : null;
 
-      // 1. Run ScriptWriter Agent
-      const generatedScriptChunks = await generateScript(
-        topic, 
-        productImageData, 
-        logoImageData, 
-        scriptMode, 
+      const chunks = await generateScript(
+        topic,
+        product,
+        logo,
+        scriptMode,
         characterDescription,
-        referenceUrl
+        referenceUrl.trim() || null,
+        styleAnalysis.trim() || null
       );
-      setScript(generatedScriptChunks);
-      setCredits(prev => prev - SCRIPT_GENERATION_COST);
-      
-      const initialVideos = generatedScriptChunks.map(chunk => ({
-        id: chunk.id,
-        scriptChunk: chunk,
-        videoUrl: null,
-        status: 'pending' as const,
-      }));
-      setVideos(initialVideos);
 
-      // 2. Run Social Publisher Agent (Background)
-      generateSocialContent(topic, generatedScriptChunks, referenceUrl)
-          .then(content => setSocialContent(content))
-          .catch(err => console.error("Social Agent Error:", err));
+      setScript(chunks);
+      setCredits((prev) => prev - SCRIPT_GENERATION_COST);
+      setVideos(
+        chunks.map((chunk) => ({
+          id: chunk.id,
+          scriptChunk: chunk,
+          videoUrl: null,
+          status: 'pending' as const,
+        }))
+      );
 
+      // Background agent: a failure here must not block the pipeline.
+      generateSocialContent(topic, chunks, referenceUrl.trim() || null)
+        .then(setSocialContent)
+        .catch((err) => {
+          console.error('Social Agent Error:', err);
+          setToast({ message: 'Não foi possível gerar o conteúdo para redes sociais.', tone: 'neutral' });
+        });
     } catch (e) {
-      const errorMessage = e instanceof Error ? e.message : "Ocorreu um erro desconhecido.";
-      if (errorMessage.includes("Requested entity was not found")) {
-        setError("Chave de API inválida ou modelo não encontrado. Por favor, verifique sua chave.");
-        setApiKeySelected(false);
-      } else {
-        setError(errorMessage);
-      }
+      console.error(e);
+      const message = humanizeError(e);
+      setError(message);
+      if (/Modelo não encontrado|Chave de API inválida/.test(message)) setApiKeySelected(false);
     } finally {
       setIsLoadingScript(false);
     }
-  }, [topic, credits, scriptMode, productImageFile, logoImageFile, characterDescription, referenceUrl]);
+  }, [
+    topic,
+    credits,
+    scriptMode,
+    productImageFile,
+    logoImageFile,
+    characterDescription,
+    referenceUrl,
+    styleAnalysis,
+  ]);
 
-  const handleScriptChange = (index: number, field: 'scene' | 'narration', value: string) => {
-    if (!script) return;
-    const updatedScript = [...script];
-    updatedScript[index] = { ...updatedScript[index], [field]: value };
-    setScript(updatedScript);
-    
-    setVideos(prevVideos => {
-        const updatedVideos = [...prevVideos];
-        const videoIndex = updatedVideos.findIndex(v => v.scriptChunk.id === updatedScript[index].id);
-        if(videoIndex !== -1) {
-            updatedVideos[videoIndex].scriptChunk = updatedScript[index];
+  const handleScriptChange = useCallback(
+    (index: number, field: 'scene' | 'narration', value: string) => {
+      if (!script) return;
+      const edited = { ...script[index], [field]: value };
+      const updated = [...script];
+      updated[index] = edited;
+      setScript(updated);
+      setVideos((prev) => prev.map((v) => (v.scriptChunk.id === edited.id ? { ...v, scriptChunk: edited } : v)));
+    },
+    [script]
+  );
+
+  /**
+   * Renders the given scenes. Credits are charged upfront so the confirmation
+   * can quote an exact price, and refunded per scene that fails.
+   */
+  const renderScenes = useCallback(
+    async (chunks: ScriptChunk[]) => {
+      if (!characterDescription || chunks.length === 0) return;
+
+      const totalCost = chunks.length * VIDEO_CHUNK_GENERATION_COST;
+      if (credits < totalCost) {
+        setError(`Créditos insuficientes: ${chunks.length} cena(s) custam ${totalCost} créditos.`);
+        return;
+      }
+
+      setIsGeneratingVideo(true);
+      setError(null);
+      setCredits((prev) => prev - totalCost);
+      setMergedVideoUrl(null);
+
+      const targetIds = new Set(chunks.map((c) => c.id));
+      setVideos((prev) =>
+        prev.map((v) =>
+          targetIds.has(v.id)
+            ? {
+                ...v,
+                status: 'generating' as const,
+                videoUrl: null,
+                errorMessage: undefined,
+                progressMessage: 'Na fila',
+              }
+            : v
+        )
+      );
+
+      const characterImage: ImagePayload | null =
+        useCharacterReference && influencerImageFile
+          ? await fileToMediaPayload(influencerImageFile).catch(() => null)
+          : null;
+
+      let refunded = 0;
+      const failures: string[] = [];
+
+      await mapWithConcurrency(chunks, VIDEO_RENDER_CONCURRENCY, async (chunk) => {
+        const setProgress = (progressMessage: string) =>
+          setVideos((prev) => prev.map((v) => (v.id === chunk.id ? { ...v, progressMessage } : v)));
+
+        try {
+          setProgress('Escrevendo prompt de direção');
+          const optimizedPrompt = await optimizeVeoPrompt(chunk, videoStyle, characterDescription);
+          setVideos((prev) => prev.map((v) => (v.id === chunk.id ? { ...v, optimizedPrompt } : v)));
+
+          const videoUrl = await generateVideoForChunk(chunk, {
+            style: videoStyle,
+            aspectRatio,
+            characterDescription,
+            optimizedPrompt,
+            characterImage,
+            onProgress: setProgress,
+          });
+
+          trackObjectUrl(videoUrl);
+          setVideos((prev) =>
+            prev.map((v) =>
+              v.id === chunk.id ? { ...v, status: 'done', videoUrl, progressMessage: undefined } : v
+            )
+          );
+        } catch (err) {
+          console.error(`Failed to generate video for chunk ${chunk.id}`, err);
+          const message = humanizeError(err);
+          failures.push(message);
+          refunded += VIDEO_CHUNK_GENERATION_COST;
+          setVideos((prev) =>
+            prev.map((v) =>
+              v.id === chunk.id
+                ? { ...v, status: 'error', errorMessage: message, progressMessage: undefined }
+                : v
+            )
+          );
         }
-        return updatedVideos;
-    });
-  };
+      });
 
-  const handleGenerateVideos = useCallback(async () => {
-    if (!script || !characterDescription) return;
+      if (refunded > 0) setCredits((prev) => prev + refunded);
+      setIsGeneratingVideo(false);
 
-    const totalCost = script.length * VIDEO_CHUNK_GENERATION_COST;
-    if (credits < totalCost) {
-      setError(`Créditos insuficientes. Você precisa de ${totalCost} créditos para gerar os vídeos de todas as cenas.`);
-      return;
-    }
-
-    setIsGeneratingVideo(true);
-    setError(null);
-    setMergedVideoUrl(null);
-    setCredits(prev => prev - totalCost);
-
-    setVideos(prev => prev.map(v => ({ ...v, status: 'generating' })));
-
-    let firstErrorMessage: string | null = null;
-
-    const promises = script.map(async (chunk) => {
-      try {
-          // 1. Agent: Video Director (Optimize Prompt)
-          const optimizedPrompt = await optimizeVeoPrompt(chunk.scene, videoStyle, characterDescription);
-          
-          setVideos(prev => prev.map(v => v.id === chunk.id ? { ...v, optimizedPrompt } : v));
-
-          // 2. Agent: Renderer (Veo)
-          const videoUrl = await generateVideoForChunk(chunk, videoStyle, aspectRatio, characterDescription, optimizedPrompt);
-          
-          setVideos(prev => prev.map(v => v.id === chunk.id ? { ...v, status: 'done', videoUrl } : v));
-      } catch (error) {
-          console.error(`Failed to generate video for chunk ${chunk.id}`, error);
-          if (!firstErrorMessage && error instanceof Error) {
-            firstErrorMessage = error.message;
-          }
-          setVideos(prev => prev.map(v => v.id === chunk.id ? { ...v, status: 'error' } : v));
+      if (failures.length > 0) {
+        const [first] = failures;
+        setError(
+          failures.length === 1
+            ? `Uma cena falhou: ${first} Os créditos dela foram devolvidos.`
+            : `${failures.length} cenas falharam (${first}) Os créditos delas foram devolvidos.`
+        );
+        if (/Modelo não encontrado|Chave de API inválida/.test(first)) setApiKeySelected(false);
       }
-    });
+    },
+    [
+      credits,
+      characterDescription,
+      videoStyle,
+      aspectRatio,
+      useCharacterReference,
+      influencerImageFile,
+      trackObjectUrl,
+    ]
+  );
 
-    await Promise.all(promises);
+  const handleRetryFailed = useCallback(() => {
+    const failed = videos.filter((v) => v.status === 'error').map((v) => v.scriptChunk);
+    if (failed.length > 0) void renderScenes(failed);
+  }, [videos, renderScenes]);
 
-    setIsGeneratingVideo(false);
-    
-    if (firstErrorMessage) {
-      // Enhance error message for Veo requirements
-      if (firstErrorMessage.includes("Requested entity was not found")) {
-          setError("O modelo Veo requer um projeto com faturamento habilitado (Paid Tier). Por favor, selecione uma chave de API de um projeto com billing ativo.");
-          setApiKeySelected(false);
-          return;
-      }
-      setError(firstErrorMessage);
-    }
-
-  }, [script, credits, videoStyle, aspectRatio, characterDescription]);
-
-  // Refactored handleMergeVideos to support Smooth Transitions (Cross-Dissolve)
-  const handleMergeVideos = useCallback(async () => {
-    const generatedVideos = videos.filter(v => v.status === 'done' && v.videoUrl);
-    if (generatedVideos.length !== videos.length || generatedVideos.length === 0) return;
+  const handleMerge = useCallback(async () => {
+    const clipUrls = videos.map((v) => v.videoUrl).filter((url): url is string => Boolean(url));
+    if (clipUrls.length === 0 || clipUrls.length !== videos.length) return;
 
     setIsMerging(true);
+    setMergeStage('');
     setError(null);
-    
-    let audioContext: AudioContext | null = null;
 
     try {
-        const videoUrls = generatedVideos.map(v => v.videoUrl!);
-        
-        // Setup Audio Context
-        audioContext = new (window.AudioContext || (window as any).webkitAudioContext)();
-        await audioContext.resume(); // Important for newer browsers
-
-        const audioDestination = audioContext.createMediaStreamDestination();
-        
-        // Setup Canvas
-        const canvas = document.createElement('canvas');
-        const ctx = canvas.getContext('2d');
-        
-        if (!ctx) throw new Error("Não foi possível obter o contexto do canvas");
-
-        // Initialize Canvas size based on the first video
-        const tempVideo = document.createElement('video');
-        tempVideo.crossOrigin = "anonymous";
-        tempVideo.src = videoUrls[0];
-        await new Promise((resolve) => {
-            tempVideo.onloadedmetadata = () => {
-                canvas.width = tempVideo.videoWidth;
-                canvas.height = tempVideo.videoHeight;
-                resolve(null);
-            };
-        });
-
-        // Capture Canvas Stream
-        const canvasStream = canvas.captureStream(30);
-        const combinedStream = new MediaStream([
-            ...canvasStream.getVideoTracks(),
-            ...audioDestination.stream.getAudioTracks()
-        ]);
-
-        const recorder = new MediaRecorder(combinedStream, { mimeType: 'video/webm; codecs=vp9,opus' });
-        const recordedChunks: Blob[] = [];
-
-        recorder.ondataavailable = (e) => {
-            if (e.data.size > 0) recordedChunks.push(e.data);
-        };
-
-        recorder.onstop = () => {
-            const blob = new Blob(recordedChunks, { type: 'video/webm' });
-            const url = URL.createObjectURL(blob);
-            setMergedVideoUrl(url);
-            setIsMerging(false);
-            setShowConfetti(true);
-            setTimeout(() => setShowConfetti(false), 5000);
-            audioContext?.close();
-        };
-
-        recorder.start();
-
-        // --- Transition Logic System ---
-        
-        // We need two video elements to ping-pong between for cross-fading
-        const videoA = document.createElement('video');
-        const videoB = document.createElement('video');
-        
-        [videoA, videoB].forEach(v => {
-            // CRITICAL FIX: Muted must be FALSE for createMediaElementSource to capture audio
-            // We don't hear it because we don't connect it to audioContext.destination (speakers)
-            v.muted = false; 
-            v.volume = 1.0;
-            v.crossOrigin = "anonymous"; // Required for canvas tainting security
-            v.playsInline = true;
-        });
-
-        // Setup audio graph nodes for both
-        const gainNodeA = audioContext.createGain();
-        const gainNodeB = audioContext.createGain();
-        
-        const sourceNodeA = audioContext.createMediaElementSource(videoA);
-        const sourceNodeB = audioContext.createMediaElementSource(videoB);
-        
-        // Connect sources to gains, and gains to the RECORDER (not speakers)
-        sourceNodeA.connect(gainNodeA).connect(audioDestination);
-        sourceNodeB.connect(gainNodeB).connect(audioDestination);
-
-        // Helper to prepare a video element
-        const loadVideo = async (videoEl: HTMLVideoElement, url: string) => {
-            videoEl.src = url;
-            await new Promise<void>((resolve, reject) => {
-                videoEl.oncanplay = () => resolve();
-                videoEl.onerror = reject;
-            });
-        };
-
-        // Sequence State
-        let currentIndex = 0;
-        let activeVideo = videoA;
-        let incomingVideo = videoB;
-        let activeGain = gainNodeA;
-        let incomingGain = gainNodeB;
-        
-        // Initial Setup
-        await loadVideo(activeVideo, videoUrls[0]);
-        
-        // Start playback
-        activeGain.gain.setValueAtTime(1, audioContext.currentTime);
-        incomingGain.gain.setValueAtTime(0, audioContext.currentTime);
-        
-        await activeVideo.play();
-
-        // Render Loop
-        const render = async () => {
-            if (!ctx || !activeVideo) return;
-
-            // 1. Draw the active video (Base layer)
-            ctx.globalAlpha = 1;
-            ctx.drawImage(activeVideo, 0, 0, canvas.width, canvas.height);
-
-            // 2. Check for Transition Trigger
-            const timeLeft = activeVideo.duration - activeVideo.currentTime;
-            const transitionTimeSec = TRANSITION_DURATION_MS / 1000;
-            const hasNextVideo = currentIndex + 1 < videoUrls.length;
-            const isTransitioning = !incomingVideo.paused;
-
-            // Trigger Transition
-            if (timeLeft <= transitionTimeSec && hasNextVideo && incomingVideo.paused && !incomingVideo.ended) {
-                // Load and play next video
-                try {
-                    await loadVideo(incomingVideo, videoUrls[currentIndex + 1]);
-                    
-                    // Audio Crossfade
-                    const now = audioContext!.currentTime;
-                    // Cancel any scheduled changes to avoid conflicts
-                    activeGain.gain.cancelScheduledValues(now);
-                    incomingGain.gain.cancelScheduledValues(now);
-                    
-                    // Start fade out/in
-                    activeGain.gain.setValueAtTime(1, now);
-                    activeGain.gain.linearRampToValueAtTime(0, now + transitionTimeSec);
-                    
-                    incomingGain.gain.setValueAtTime(0, now);
-                    incomingGain.gain.linearRampToValueAtTime(1, now + transitionTimeSec);
-                    
-                    await incomingVideo.play();
-                } catch (err) {
-                    console.error("Error starting transition", err);
-                }
-            }
-
-            // 3. Handle Transition Visuals (Overlay)
-            if (isTransitioning) {
-                // Calculate alpha based on time progress relative to transition duration
-                const progress = incomingVideo.currentTime / transitionTimeSec;
-                const alpha = Math.max(0, Math.min(progress, 1)); // Clamp between 0 and 1
-                
-                ctx.globalAlpha = alpha;
-                ctx.drawImage(incomingVideo, 0, 0, canvas.width, canvas.height);
-                ctx.globalAlpha = 1; // Reset
-            }
-
-            // 4. Handle Video End / Swap
-            if (activeVideo.ended) {
-                if (hasNextVideo) {
-                    // Swap roles
-                    const tempVideo = activeVideo;
-                    activeVideo = incomingVideo;
-                    incomingVideo = tempVideo; // Old active becomes next incoming
-                    
-                    const tempGain = activeGain;
-                    activeGain = incomingGain;
-                    incomingGain = tempGain;
-
-                    currentIndex++;
-                    
-                    // Pause/Reset the finished video to prepare for next load
-                    incomingVideo.pause();
-                    incomingVideo.currentTime = 0;
-                    
-                    // Ensure audio levels are completely solidified after swap
-                    activeGain.gain.setValueAtTime(1, audioContext!.currentTime);
-                    incomingGain.gain.setValueAtTime(0, audioContext!.currentTime);
-                    
-                    requestAnimationFrame(render);
-                } else {
-                    // Sequence Finished
-                    // Wait a tiny bit to ensure last frame is recorded
-                    setTimeout(() => {
-                         recorder.stop();
-                    }, 100);
-                }
-            } else {
-                requestAnimationFrame(render);
-            }
-        };
-
-        requestAnimationFrame(render);
-
+      const { blob, mimeType } = await mergeVideoClips(clipUrls, {
+        transitionMs: TRANSITION_DURATION_MS,
+        onProgress: setMergeStage,
+      });
+      setMergedVideoUrl(trackObjectUrl(URL.createObjectURL(blob)));
+      setMergedVideoExtension(mimeType.includes('mp4') ? 'mp4' : 'webm');
+      setCurrentStep('entrega');
+      setToast({ message: 'Vídeo final pronto.', tone: 'ok' });
     } catch (e) {
-        console.error(e);
-        setError(e instanceof Error ? e.message : "Falha ao unir os vídeos.");
-        setIsMerging(false);
-        audioContext?.close();
+      console.error(e);
+      setError(e instanceof Error ? e.message : 'Falha ao unir os vídeos.');
+    } finally {
+      setIsMerging(false);
+      setMergeStage('');
     }
-  }, [videos]);
-  
-  useEffect(() => {
-    const allDone = videos.length > 0 && videos.every(v => v.status === 'done');
-    if (allDone && !isGeneratingVideo && !mergedVideoUrl && !isMerging) {
-      handleMergeVideos();
-    }
-  }, [videos, isGeneratingVideo, mergedVideoUrl, isMerging, handleMergeVideos]);
+  }, [videos, trackObjectUrl]);
 
-  const handleReset = () => {
+  const allScenesRendered = videos.length > 0 && videos.every((v) => v.status === 'done');
+
+  // Auto-assemble the final cut once every scene has rendered.
+  useEffect(() => {
+    if (allScenesRendered && !isGeneratingVideo && !mergedVideoUrl && !isMerging) {
+      // oxlint-disable-next-line react/set-state-in-effect
+      void handleMerge();
+    }
+  }, [allScenesRendered, isGeneratingVideo, mergedVideoUrl, isMerging, handleMerge]);
+
+  // --- Project persistence --------------------------------------------------
+
+  const handleSaveProject = useCallback(async () => {
+    try {
+      const [influencer, product, logo] = await Promise.all([
+        influencerImageFile ? fileToDataUrl(influencerImageFile) : Promise.resolve(null),
+        productImageFile ? fileToDataUrl(productImageFile) : Promise.resolve(null),
+        logoImageFile ? fileToDataUrl(logoImageFile) : Promise.resolve(null),
+      ]);
+
+      const state: SavedProjectState = {
+        version: PROJECT_FORMAT_VERSION,
+        timestamp: Date.now(),
+        topic,
+        characterDescription,
+        script,
+        credits,
+        referenceUrl,
+        styleAnalysis,
+        videoStyle,
+        scriptMode,
+        aspectRatio,
+        useCharacterReference,
+        socialContent,
+        influencerImageBase64: influencer,
+        productImageBase64: product,
+        logoImageBase64: logo,
+      };
+
+      localStorage.setItem(LOCAL_STORAGE_KEY, JSON.stringify(state));
+      setCanLoadProject(true);
+      setToast({ message: 'Projeto salvo.', tone: 'ok' });
+    } catch (e: any) {
+      console.error('Erro ao salvar projeto:', e);
+      const isQuota =
+        e?.name === 'QuotaExceededError' || e?.name === 'NS_ERROR_DOM_QUOTA_REACHED' || e?.code === 22;
+      setToast({
+        message: isQuota
+          ? 'Imagens grandes demais para salvar no navegador.'
+          : 'Falha ao salvar o projeto.',
+        tone: 'danger',
+      });
+    }
+  }, [
+    influencerImageFile,
+    productImageFile,
+    logoImageFile,
+    topic,
+    characterDescription,
+    script,
+    credits,
+    referenceUrl,
+    styleAnalysis,
+    videoStyle,
+    scriptMode,
+    aspectRatio,
+    useCharacterReference,
+    socialContent,
+  ]);
+
+  const handleLoadProject = useCallback(() => {
+    try {
+      const saved = localStorage.getItem(LOCAL_STORAGE_KEY);
+      if (!saved) return;
+      const data: SavedProjectState = JSON.parse(saved);
+
+      setMergedVideoUrl(null);
+      setTopic(data.topic ?? '');
+      setCharacterDescription(data.characterDescription ?? null);
+      setCredits(typeof data.credits === 'number' ? data.credits : INITIAL_CREDITS);
+      setReferenceUrl(data.referenceUrl ?? '');
+      setStyleAnalysis(data.styleAnalysis ?? '');
+      setVideoStyle(data.videoStyle ?? 'cinematic');
+      setScriptMode(data.scriptMode ?? 'balanced');
+      setAspectRatio(data.aspectRatio ?? '9:16');
+      setUseCharacterReference(data.useCharacterReference ?? true);
+      setSocialContent(data.socialContent ?? null);
+
+      setInfluencerImageFile(
+        data.influencerImageBase64 ? dataUrlToFile(data.influencerImageBase64, 'influencer.png') : null
+      );
+      setProductImageFile(data.productImageBase64 ? dataUrlToFile(data.productImageBase64, 'produto.png') : null);
+      setLogoImageFile(data.logoImageBase64 ? dataUrlToFile(data.logoImageBase64, 'logo.png') : null);
+      setPreviews({
+        influencer: data.influencerImageBase64 ?? null,
+        product: data.productImageBase64 ?? null,
+        logo: data.logoImageBase64 ?? null,
+      });
+
+      if (data.script?.length) {
+        setScript(data.script);
+        setVideos(
+          data.script.map((chunk) => ({
+            id: chunk.id,
+            scriptChunk: chunk,
+            videoUrl: null,
+            status: 'pending' as const,
+          }))
+        );
+        setCurrentStep('roteiro');
+        setToast({
+          message: 'Projeto carregado. As cenas precisam ser renderizadas de novo.',
+          tone: 'neutral',
+        });
+      } else {
+        setScript(null);
+        setVideos([]);
+        setCurrentStep('persona');
+        setToast({ message: 'Projeto carregado.', tone: 'ok' });
+      }
+    } catch (e) {
+      console.error('Erro ao carregar projeto:', e);
+      setToast({ message: 'Arquivo de projeto corrompido ou inválido.', tone: 'danger' });
+    }
+  }, []);
+
+  const handleReset = useCallback(() => {
     setTopic('');
     setProductImageFile(null);
     setLogoImageFile(null);
     setInfluencerImageFile(null);
+    setPreviews({ influencer: null, product: null, logo: null });
     setCharacterDescription(null);
     setScript(null);
     setVideos([]);
@@ -688,133 +708,333 @@ function App() {
     setIsGeneratingVideo(false);
     setIsMerging(false);
     setMergedVideoUrl(null);
-    setShowConfetti(false);
-    setReferenceUrl(TEST_URL);
+    setReferenceUrl('');
+    selectReferenceVideo(null);
+    setStyleAnalysis('');
     setSocialContent(null);
-  };
+    setConfirmingRender(false);
+    setCurrentStep('persona');
+  }, [selectReferenceVideo]);
+
+  // --- Step model -----------------------------------------------------------
+
+  const busy = isLoadingScript || isGeneratingVideo || isMerging;
+  const renderCost = (script?.length ?? 0) * VIDEO_CHUNK_GENERATION_COST;
+
+  const steps: StepDescriptor[] = useMemo(
+    () =>
+      STEP_ORDER.map(({ id, label }) => {
+        const complete =
+          id === 'persona'
+            ? Boolean(characterDescription)
+            : id === 'campanha'
+              ? Boolean(productImageFile) && topic.trim().length > 0
+              : id === 'roteiro'
+                ? Boolean(script)
+                : id === 'producao'
+                  ? allScenesRendered
+                  : Boolean(mergedVideoUrl);
+        return { id, label, state: complete ? 'done' : 'todo' };
+      }),
+    [characterDescription, productImageFile, topic, script, allScenesRendered, mergedVideoUrl]
+  );
+
+  const meta = STEP_ORDER.find((s) => s.id === currentStep) ?? STEP_ORDER[0];
+
+  const goTo = useCallback((id: StepId) => {
+    setConfirmingRender(false);
+    setCurrentStep(id);
+  }, []);
+
+  /** What blocks this step's primary action, phrased as the fix. */
+  const blockedBy = ((): string | null => {
+    if (currentStep === 'persona') return characterDescription ? null : 'Envie uma foto para gerar a persona.';
+    if (currentStep === 'campanha') {
+      if (!productImageFile) return 'Envie a imagem do produto.';
+      if (!topic.trim()) return 'Escreva ou gere o briefing da campanha.';
+      return null;
+    }
+    if (currentStep === 'roteiro') {
+      if (!characterDescription) return 'Falta a persona — volte para a etapa 1.';
+      if (!productImageFile || !topic.trim()) return 'Falta o produto ou o briefing — volte para a etapa 2.';
+      if (credits < SCRIPT_GENERATION_COST) return 'Créditos insuficientes.';
+      return null;
+    }
+    if (currentStep === 'producao') {
+      if (!script) return 'Gere o roteiro primeiro — etapa 3.';
+      if (!allScenesRendered && credits < renderCost) {
+        return `Créditos insuficientes: são necessários ${renderCost}.`;
+      }
+      return null;
+    }
+    if (!allScenesRendered) return 'Renderize todas as cenas na etapa 4 para montar o vídeo.';
+    return null;
+  })();
+
+  // --- Gates ----------------------------------------------------------------
 
   if (checkingApiKey) {
     return (
-        <div className="min-h-screen flex items-center justify-center bg-gray-900 text-white">
-            <div className="text-center">
-                <Loader />
-                <p className="mt-4 text-cyan-400 animate-pulse">Inicializando Sistemas...</p>
-            </div>
-        </div>
+      <div className="flex min-h-screen items-center justify-center text-ink-2">
+        <Spinner className="h-5 w-5 text-accent-ink" label="Inicializando" />
+      </div>
     );
   }
 
   if (!apiKeySelected) {
     return (
-        <div className="min-h-screen flex flex-col bg-gray-900 text-white relative overflow-hidden">
-            <div className="absolute inset-0 bg-[radial-gradient(ellipse_at_top,_var(--tw-gradient-stops))] from-gray-800 via-gray-900 to-black z-0"></div>
-            <div className="relative z-10">
-                <Header credits={credits} onReset={handleReset} onSave={handleSaveProject} onLoad={handleLoadProject} canLoad={canLoadProject} />
-                <main className="container mx-auto p-4 md:p-8 flex flex-col items-center justify-center text-center" style={{minHeight: 'calc(100vh - 140px)'}}>
-                    <div className="p-8 rounded-3xl glass-panel max-w-2xl w-full">
-                        <h1 className="text-5xl font-bold mb-6 bg-clip-text text-transparent bg-gradient-to-r from-cyan-400 to-violet-400">
-                            AI Video Studio
-                        </h1>
-                        <p className="mb-8 text-gray-300 text-lg leading-relaxed">
-                            Desbloqueie o poder da geração de vídeo Veo. Selecione sua chave de API para acessar o estúdio criativo.
-                            <br/>
-                            <a href="https://ai.google.dev/gemini-api/docs/billing" target="_blank" rel="noopener noreferrer" className="text-cyan-400 hover:text-cyan-300 underline mt-2 inline-block">
-                                Ver detalhes de faturamento
-                            </a>
-                        </p>
-                        {error && (
-                            <div className="bg-red-500/10 border border-red-500 text-red-200 px-4 py-3 rounded-xl relative mb-6" role="alert">
-                                <strong className="font-bold">Erro: </strong>
-                                <span className="block sm:inline">{error}</span>
-                            </div>
-                        )}
-                        <button
-                            onClick={handleSelectApiKey}
-                            className="bg-gradient-to-r from-cyan-600 to-violet-600 hover:from-cyan-500 hover:to-violet-500 text-white font-bold py-4 px-10 rounded-full transition-all duration-200 text-lg shadow-lg hover:shadow-cyan-500/50 hover:scale-105"
-                        >
-                            Conectar API Key
-                        </button>
-                    </div>
-                </main>
+      <div className="flex min-h-screen flex-col">
+        <Header
+          credits={credits}
+          onReset={handleReset}
+          onSave={() => void handleSaveProject()}
+          onLoad={handleLoadProject}
+          canLoad={canLoadProject}
+        />
+        <main className="mx-auto flex w-full max-w-xl flex-1 flex-col justify-center px-4 py-16">
+          <h1 className="text-3xl font-semibold text-ink">Conecte uma chave de API</h1>
+          <p className="mt-3 text-base text-ink-2">
+            O estúdio usa Gemini para o roteiro e Veo para o vídeo. O Veo exige um projeto do Google Cloud com
+            faturamento habilitado.
+          </p>
+          <p className="mt-4 text-sm text-ink-3">
+            Fora do AI Studio, crie um arquivo{' '}
+            <code className="rounded bg-surface-2 px-1.5 py-0.5 text-accent-ink">.env</code> com{' '}
+            <code className="rounded bg-surface-2 px-1.5 py-0.5 text-accent-ink">GEMINI_API_KEY=sua_chave</code> e
+            reinicie o servidor.
+          </p>
+          {error && (
+            <div className="mt-6">
+              <Notice onDismiss={() => setError(null)}>{error}</Notice>
             </div>
-        </div>
+          )}
+          <div className="mt-8 flex flex-wrap items-center gap-3">
+            <Button variant="primary" size="lg" onClick={() => void handleSelectApiKey()}>
+              Conectar chave
+            </Button>
+            <a
+              href="https://ai.google.dev/gemini-api/docs/billing"
+              target="_blank"
+              rel="noopener noreferrer"
+              className="rounded text-sm text-accent-ink underline-offset-4 hover:underline"
+            >
+              Ver detalhes de faturamento
+            </a>
+          </div>
+        </main>
+      </div>
     );
   }
 
+  // --- Footer ---------------------------------------------------------------
+
+  const footerActions = (() => {
+    switch (currentStep) {
+      case 'persona':
+        return (
+          <Button variant="primary" onClick={() => goTo('campanha')} disabled={!characterDescription}>
+            Continuar
+          </Button>
+        );
+      case 'campanha':
+        return (
+          <Button variant="primary" onClick={() => goTo('roteiro')} disabled={Boolean(blockedBy)}>
+            Continuar
+          </Button>
+        );
+      case 'roteiro':
+        return (
+          <>
+            {script && (
+              <Button onClick={() => void handleGenerateScript()} disabled={Boolean(blockedBy) || busy}>
+                Gerar outro
+              </Button>
+            )}
+            <Button
+              variant="primary"
+              onClick={() => (script ? goTo('producao') : void handleGenerateScript())}
+              disabled={Boolean(blockedBy) || busy}
+            >
+              {isLoadingScript && <Spinner className="h-4 w-4" />}
+              {isLoadingScript
+                ? 'Escrevendo'
+                : script
+                  ? 'Ir para produção'
+                  : `Gerar roteiro · ${SCRIPT_GENERATION_COST} crédito`}
+            </Button>
+          </>
+        );
+      case 'producao':
+        if (allScenesRendered) {
+          return (
+            <Button variant="primary" onClick={() => goTo('entrega')}>
+              Ver resultado
+            </Button>
+          );
+        }
+        if (confirmingRender) {
+          return (
+            <>
+              <Button onClick={() => setConfirmingRender(false)}>Cancelar</Button>
+              <Button
+                variant="primary"
+                onClick={() => {
+                  setConfirmingRender(false);
+                  if (script) void renderScenes(script);
+                }}
+              >
+                Confirmar · {renderCost} créditos
+              </Button>
+            </>
+          );
+        }
+        return (
+          <Button
+            variant="primary"
+            onClick={() => setConfirmingRender(true)}
+            disabled={Boolean(blockedBy) || busy}
+          >
+            {isGeneratingVideo && <Spinner className="h-4 w-4" />}
+            {isGeneratingVideo
+              ? 'Renderizando'
+              : `Renderizar ${script?.length ?? 0} cenas · ${renderCost} créditos`}
+          </Button>
+        );
+      default:
+        return <Button onClick={() => goTo('producao')}>Voltar para produção</Button>;
+    }
+  })();
+
+  const footerHint = (() => {
+    if (currentStep === 'producao' && confirmingRender) {
+      return `Isso consome ${renderCost} créditos e não pode ser desfeito.`;
+    }
+    if (currentStep === 'producao' && isGeneratingVideo) {
+      return `Renderizando até ${VIDEO_RENDER_CONCURRENCY} cenas por vez para respeitar a cota do Veo.`;
+    }
+    if (currentStep === 'entrega' && mergedVideoUrl) return 'Vídeo montado e pronto para baixar.';
+    if (currentStep === 'roteiro' && script) return 'Revise as cenas antes de renderizar — depois cada mudança custa uma nova renderização.';
+    if (currentStep === 'persona' && characterDescription) return 'Persona pronta. Ela vai reaparecer em cada cena.';
+    // Otherwise the footer stays quiet: repeating the subtitle two rows above
+    // it added nothing.
+    return undefined;
+  })();
 
   return (
-    <div className="min-h-screen text-gray-200 relative pb-12">
-      <Confetti trigger={showConfetti} />
-      {toast && <Toast message={toast.message} type={toast.type} onClose={() => setToast(null)} />}
-      <Header credits={credits} onReset={handleReset} onSave={handleSaveProject} onLoad={handleLoadProject} canLoad={canLoadProject} />
-      <main className="container mx-auto p-4 md:p-8 relative z-10">
+    <div className="flex min-h-screen flex-col">
+      <Header
+        credits={credits}
+        onReset={handleReset}
+        onSave={() => void handleSaveProject()}
+        onLoad={handleLoadProject}
+        canLoad={canLoadProject}
+      />
+      <Stepper steps={steps} current={currentStep} onSelect={goTo} />
+
+      <main className="mx-auto w-full max-w-6xl flex-1 px-4 py-8 sm:px-6">
+        <div className="mb-6">
+          <h1 className="text-2xl font-semibold text-ink">{meta.title}</h1>
+          <p className="mt-1 text-base text-ink-2">{meta.lead}</p>
+        </div>
+
         {error && (
-          <div className="animate-fade-in-up bg-red-900/80 border border-red-500/50 text-white px-6 py-4 rounded-xl relative mb-6 backdrop-blur-md shadow-lg" role="alert">
-            <div className="flex items-center">
-                <span className="text-2xl mr-3">⚠️</span>
-                <div>
-                    <strong className="font-bold block">Erro no Processamento</strong>
-                    <span className="block sm:inline text-sm opacity-90">{error}</span>
-                </div>
-            </div>
-            <button className="absolute top-4 right-4 text-red-300 hover:text-white" onClick={() => setError(null)}>
-              <svg className="h-5 w-5" role="button" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 20 20" fill="currentColor"><path d="M14.348 14.849a1.2 1.2 0 0 1-1.697 0L10 11.819l-2.651 3.029a1.2 1.2 0 1 1-1.697-1.697l2.758-3.15-2.759-3.152a1.2 1.2 0 1 1 1.697-1.697L10 8.183l2.651-3.031a1.2 1.2 0 1 1 1.697 1.697l-2.758 3.152 2.758 3.15a1.2 1.2 0 0 1 0 1.698z"/></svg>
-            </button>
+          <div className="mb-6">
+            <Notice title="Erro no processamento" onDismiss={() => setError(null)}>
+              {error}
+            </Notice>
           </div>
         )}
 
-        {!script ? (
-          <ScriptGenerator
-            // Influencer Props
-            influencerImageFile={influencerImageFile}
-            setInfluencerImageFile={setInfluencerImageFile}
-            onAnalyzeInfluencer={handleAnalyzeInfluencer}
-            isAnalyzingInfluencer={isAnalyzingInfluencer}
-            characterDescription={characterDescription}
-            
-            // Campaign Props
-            topic={topic}
-            setTopic={setTopic}
-            productImageFile={productImageFile}
-            setProductImageFile={setProductImageFile}
-            logoImageFile={logoImageFile}
-            setLogoImageFile={setLogoImageFile}
-            onGenerateBriefing={handleAutoGenerateBriefing}
-            isGeneratingBriefing={isGeneratingBriefing}
-            
-            // Reference URL
-            referenceUrl={referenceUrl}
-            setReferenceUrl={setReferenceUrl}
+        <div key={currentStep} className="animate-fade-in">
+          {currentStep === 'persona' && (
+            <PersonaStep
+              influencerImageFile={influencerImageFile}
+              influencerPreview={previews.influencer}
+              onSelectInfluencer={(file) => selectImage('influencer', file, (f) => void analyzeInfluencer(f))}
+              isAnalyzing={isAnalyzingInfluencer}
+              characterDescription={characterDescription}
+              onError={setError}
+            />
+          )}
 
-            onGenerate={handleGenerateScript}
-            isLoading={isLoadingScript}
-            scriptMode={scriptMode}
-            setScriptMode={setScriptMode}
-          />
-        ) : (
-          <div className="grid grid-cols-1 lg:grid-cols-2 gap-8">
-            <ScriptEditor
+          {currentStep === 'campanha' && (
+            <CampaignStep
+              productImageFile={productImageFile}
+              productPreview={previews.product}
+              onSelectProduct={(file) => selectImage('product', file)}
+              logoImageFile={logoImageFile}
+              logoPreview={previews.logo}
+              onSelectLogo={(file) => selectImage('logo', file)}
+              topic={topic}
+              setTopic={setTopic}
+              onGenerateBriefing={() => void handleGenerateBriefing()}
+              isGeneratingBriefing={isGeneratingBriefing}
+              referenceUrl={referenceUrl}
+              setReferenceUrl={setReferenceUrl}
+              referenceVideoFile={referenceVideoFile}
+              referenceVideoPreview={referenceVideoPreview}
+              onSelectReferenceVideo={selectReferenceVideo}
+              onAnalyzeVideo={() => void handleAnalyzeReferenceVideo()}
+              styleAnalysis={styleAnalysis}
+              setStyleAnalysis={setStyleAnalysis}
+              onAnalyzeStyle={() => void handleAnalyzeStyle()}
+              isAnalyzingStyle={isAnalyzingStyle}
+              onExportPdf={() => void handleExportPdf()}
+              isExportingPdf={isExportingPdf}
+              onError={setError}
+              disabled={busy}
+            />
+          )}
+
+          {currentStep === 'roteiro' && (
+            <ScriptStep
               script={script}
+              scriptMode={scriptMode}
+              setScriptMode={setScriptMode}
               characterDescription={characterDescription}
               onScriptChange={handleScriptChange}
-              isGeneratingVideo={isGeneratingVideo || isMerging}
+              locked={isGeneratingVideo || isMerging}
+              isLoading={isLoadingScript}
             />
-            <VideoDisplay
+          )}
+
+          {currentStep === 'producao' && (
+            <ProductionStep
               videos={videos}
-              onGenerate={handleGenerateVideos}
-              isGenerating={isGeneratingVideo}
-              isMerging={isMerging}
-              mergedVideoUrl={mergedVideoUrl}
-              totalCost={MAX_CHUNKS * VIDEO_CHUNK_GENERATION_COST}
               videoStyle={videoStyle}
               setVideoStyle={setVideoStyle}
               aspectRatio={aspectRatio}
               setAspectRatio={setAspectRatio}
-              socialContent={socialContent}
+              useCharacterReference={useCharacterReference}
+              setUseCharacterReference={setUseCharacterReference}
+              hasInfluencerImage={Boolean(influencerImageFile)}
+              isGenerating={isGeneratingVideo}
+              isMerging={isMerging}
+              mergeStage={mergeStage}
+              onRetryFailed={handleRetryFailed}
             />
-          </div>
-        )}
+          )}
+
+          {currentStep === 'entrega' && (
+            <DeliveryStep
+              mergedVideoUrl={mergedVideoUrl}
+              mergedVideoExtension={mergedVideoExtension}
+              aspectRatio={aspectRatio}
+              socialContent={socialContent}
+              isMerging={isMerging}
+              mergeStage={mergeStage}
+              onRemerge={() => void handleMerge()}
+              canRemerge={allScenesRendered}
+            />
+          )}
+        </div>
       </main>
+
+      <StepFooter blockedBy={blockedBy} hint={footerHint}>
+        {footerActions}
+      </StepFooter>
+
+      {toast && <Toast toast={toast} onClose={dismissToast} />}
     </div>
   );
 }

@@ -1,0 +1,160 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+/*
+ * Design tokens.
+ *
+ * Values are RGB channel triplets rather than hex so Tailwind's opacity
+ * modifiers work against them (`bg-accent/10`, `border-line/60`).
+ *
+ * Contrast: every text token clears 4.5:1 against the surfaces it is used on.
+ * `ink-3` is the floor at ~5:1 — nothing lighter is allowed for real text.
+ */
+:root {
+  color-scheme: dark;
+
+  --bg: 11 13 16;
+  --surface-1: 19 21 25;
+  --surface-2: 26 29 34;
+  --surface-3: 34 38 44;
+
+  --line: 38 42 49;
+  --line-strong: 52 57 65;
+
+  --ink: 232 234 237;
+  --ink-2: 168 173 183;
+  --ink-3: 134 140 151;
+
+  /* One accent, three roles: fill, hover fill, and text-on-dark. */
+  --accent: 124 58 237;
+  --accent-hover: 139 92 246;
+  --accent-ink: 196 181 253;
+
+  --ok: 52 211 153;
+  --warn: 251 191 36;
+  --danger: 248 113 113;
+
+  --radius: 10px;
+  --radius-lg: 14px;
+}
+
+@layer base {
+  html {
+    -webkit-text-size-adjust: 100%;
+  }
+
+  body {
+    background-color: rgb(var(--bg));
+    color: rgb(var(--ink));
+    font-size: 15px;
+    line-height: 1.6;
+    -webkit-font-smoothing: antialiased;
+    text-rendering: optimizeLegibility;
+    min-height: 100vh;
+  }
+
+  /* One visible focus treatment for the whole app: the old UI had none. */
+  :focus-visible {
+    outline: 2px solid rgb(var(--accent-hover));
+    outline-offset: 2px;
+    border-radius: 4px;
+  }
+
+  ::selection {
+    background: rgb(var(--accent) / 0.4);
+  }
+
+  h1,
+  h2,
+  h3,
+  h4 {
+    line-height: 1.25;
+    text-wrap: balance;
+  }
+
+  /* Inputs inherit the page font instead of the UA's. */
+  input,
+  textarea,
+  select,
+  button {
+    font: inherit;
+    color: inherit;
+  }
+
+  textarea {
+    field-sizing: content;
+  }
+}
+
+@layer components {
+  .panel {
+    background-color: rgb(var(--surface-1));
+    border: 1px solid rgb(var(--line));
+    border-radius: var(--radius-lg);
+  }
+
+  .field {
+    width: 100%;
+    background-color: rgb(var(--surface-2));
+    border: 1px solid rgb(var(--line));
+    border-radius: var(--radius);
+    padding: 0.625rem 0.75rem;
+    color: rgb(var(--ink));
+    transition: border-color 150ms ease, background-color 150ms ease;
+  }
+
+  .field::placeholder {
+    color: rgb(var(--ink-3));
+  }
+
+  .field:hover:not(:disabled) {
+    border-color: rgb(var(--line-strong));
+  }
+
+  .field:focus {
+    outline: none;
+    border-color: rgb(var(--accent-hover));
+  }
+
+  .field:disabled {
+    opacity: 0.55;
+    cursor: not-allowed;
+  }
+}
+
+/* Scrollbars: visible enough to find, quiet enough to ignore. */
+* {
+  scrollbar-width: thin;
+  scrollbar-color: rgb(var(--line-strong)) transparent;
+}
+
+::-webkit-scrollbar {
+  width: 10px;
+  height: 10px;
+}
+
+::-webkit-scrollbar-track {
+  background: transparent;
+}
+
+::-webkit-scrollbar-thumb {
+  background: rgb(var(--line-strong));
+  border: 3px solid rgb(var(--bg));
+  border-radius: 999px;
+}
+
+::-webkit-scrollbar-thumb:hover {
+  background: rgb(var(--ink-3));
+}
+
+@media (prefers-reduced-motion: reduce) {
+  *,
+  *::before,
+  *::after {
+    animation-duration: 0.01ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.01ms !important;
+    scroll-behavior: auto !important;
+  }
+}
