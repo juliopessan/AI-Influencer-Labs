@@ -128,17 +128,22 @@ Cada etapa é um agente com modelo e prompt próprios, todos em
 
 | # | Agente               | Entrada                        | Saída                        | Modelo             |
 | - | -------------------- | ------------------------------ | ---------------------------- | ------------------ |
-| 1 | Casting              | Foto da influencer             | Blueprint da persona (PT-BR) | `gemini-2.5-flash` |
-| 2 | Estrategista         | Foto do produto + logo         | Briefing de campanha         | `gemini-2.5-flash` |
+| 1 | Casting              | Foto da influencer             | Blueprint da persona (PT-BR) | `gemini-3.7-flash` |
+| 2 | Estrategista         | Foto do produto + logo         | Briefing de campanha         | `gemini-3.7-flash` |
 | 3 | Diretor (vídeo)      | Vídeo de referência            | Diretrizes de estilo         | `gemini-omni-flash-preview` |
-| 3b| Diretor (link)       | URL de referência              | Diretrizes de estilo         | `gemini-2.5-flash` |
+| 3b| Diretor (link)       | URL de referência              | Diretrizes de estilo         | `gemini-3.7-flash` |
 | 4 | Roteirista           | Briefing + persona + estilo    | Roteiro de 6 cenas (JSON)    | conforme o modo¹   |
-| 5 | Diretor de Vídeo     | Cena + narração + estilo       | Prompt otimizado para Veo    | `gemini-2.5-flash` |
+| 5 | Diretor de Vídeo     | Cena + narração + estilo       | Prompt otimizado para Veo    | `gemini-3.7-flash` |
 | 6 | Renderizador         | Prompt otimizado               | Clipe de 8s (blob)           | `veo-3.1-lite-generate-preview` |
-| 7 | Social               | Roteiro completo               | Legendas por plataforma      | `gemini-2.5-flash` |
+| 7 | Social               | Roteiro completo               | Legendas por plataforma      | `gemini-3.7-flash` |
 
-¹ `fast` → `gemini-2.5-flash-lite`, `balanced` → `gemini-2.5-flash`,
+¹ `fast` → `gemini-2.5-flash-lite`, `balanced` → `gemini-3.7-flash`,
 `complex` → `gemini-2.5-pro` com *thinking budget*.
+
+Os cinco agentes de texto compartilham a constante `TEXT_MODEL` em
+`services/geminiService.ts`: trocar de modelo é uma linha, não uma varredura.
+Os modos `fast` e `complex` do Roteirista continuam apontando para modelos
+próprios, porque ali o eixo é custo × profundidade, não uniformidade.
 
 O agente Social (7) roda em segundo plano, em paralelo com a renderização: uma
 falha ali não bloqueia o vídeo.

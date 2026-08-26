@@ -185,6 +185,14 @@ const socialContentSchema = {
  */
 const OMNI_MODEL = "gemini-omni-flash-preview";
 
+/**
+ * The workhorse behind every text agent: persona, briefing, style, roteiro no
+ * modo `balanced`, prompt de vídeo e legendas. Verificado contra a API — aceita
+ * imagem na entrada, `responseSchema` e `thinkingConfig`, que é tudo o que os
+ * agentes daqui usam.
+ */
+const TEXT_MODEL = "gemini-3.7-flash";
+
 const stylePrompts: Record<VideoStyle, string> = {
   cinematic: "Cinematic shot, hyper-realistic, high detail, professional color grading, 8k, smooth motion",
   animation: "3D animation style, vibrant, high quality render, Pixar-like, expressive character",
@@ -225,7 +233,7 @@ Sintetize TODAS as informações dos Passos 1 e 2 em um **único parágrafo dens
 
 **Idioma:** A saída final (o Master Prompt) deve ser em **Português do Brasil (PT-BR)**. Responda APENAS com o Master Prompt final.`;
 
-  return generateText("gemini-2.5-flash", [{ inlineData: image }, { text: prompt }], "a descrição da persona");
+  return generateText(TEXT_MODEL, [{ inlineData: image }, { text: prompt }], "a descrição da persona");
 }
 
 /** Strategist agent: reads the product (and logo) and writes the campaign brief. */
@@ -257,7 +265,7 @@ Seja direto e criativo. Responda em Português do Brasil (PT-BR).`;
   }
   parts.push({ text: prompt });
 
-  return generateText("gemini-2.5-flash", parts, "o briefing da campanha");
+  return generateText(TEXT_MODEL, parts, "o briefing da campanha");
 }
 
 /**
@@ -322,7 +330,7 @@ Produza um guia de direção curto (máximo 6 linhas), uma diretriz por linha, c
 
 Formato: texto puro, uma diretriz por linha, começando com "> ". Sem markdown, sem introdução. Idioma: Português do Brasil.`;
 
-  return generateText("gemini-2.5-flash", [{ text: prompt }], "a análise de estilo");
+  return generateText(TEXT_MODEL, [{ text: prompt }], "a análise de estilo");
 }
 
 /** Screenwriter agent: builds the linear, N-act script. */
@@ -356,7 +364,7 @@ export async function generateScript(
       break;
     case "balanced":
     default:
-      model = "gemini-2.5-flash";
+      model = TEXT_MODEL;
       break;
   }
 
@@ -473,7 +481,7 @@ Regras:
 - Conteúdo envolvente, pronto para viralizar, com emojis relevantes.
 - Idioma: Português do Brasil (PT-BR).`;
 
-  const jsonText = await generateText("gemini-2.5-flash", [{ text: prompt }], "conteúdo social", {
+  const jsonText = await generateText(TEXT_MODEL, [{ text: prompt }], "conteúdo social", {
     responseMimeType: "application/json",
     responseSchema: socialContentSchema,
   });
@@ -520,7 +528,7 @@ Sua tarefa é converter uma descrição de cena em um prompt técnico e detalhad
 Retorne APENAS o texto do prompt, sem aspas envolventes e sem explicações.`;
 
   try {
-    return await generateText("gemini-2.5-flash", [{ text: prompt }], "o prompt otimizado");
+    return await generateText(TEXT_MODEL, [{ text: prompt }], "o prompt otimizado");
   } catch (error) {
     // The director agent only sharpens the prompt. If it stays unavailable after
     // its retries, render from the deterministic prompt rather than losing the

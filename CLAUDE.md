@@ -57,6 +57,12 @@ contra a API. O `lite` rejeita `referenceImages`; mandar assim mesmo queima uma
 ida e volta por cena. Se trocar `VEO_MODEL`, a UI e o custo estimado seguem
 sozinhos — não espalhe o id do modelo pelo código.
 
+**Os agentes de texto têm um modelo só.** `TEXT_MODEL` em
+`services/geminiService.ts` vale para persona, briefing, estilo por link, prompt
+de vídeo e legendas — hoje `gemini-3.7-flash`. Os modos `fast` e `complex` do
+Roteirista escolhem modelo próprio de propósito; qualquer outro agente que
+precise de um id literal está espalhando configuração.
+
 **Veo não faz 10 segundos.** `durationSeconds` é limitado a 4–8 nas três
 variantes. Cena mais longa exige emendar clipes.
 
