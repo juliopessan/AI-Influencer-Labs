@@ -53,7 +53,8 @@ Cada etapa é um "agente" com um modelo e um prompt próprios. Todos vivem em
 | - | -------------------- | ------------------------------ | ---------------------------- | ------------------ |
 | 1 | Casting              | Foto da influencer             | Blueprint da persona (PT-BR) | `gemini-2.5-flash` |
 | 2 | Estrategista         | Foto do produto + logo         | Briefing de campanha         | `gemini-2.5-flash` |
-| 3 | Diretor              | URL de referência              | Diretrizes de estilo         | `gemini-2.5-flash` |
+| 3 | Diretor (vídeo)      | Vídeo de referência            | Diretrizes de estilo         | `gemini-omni-flash-preview` |
+| 3b| Diretor (link)       | URL de referência              | Diretrizes de estilo         | `gemini-2.5-flash` |
 | 4 | Roteirista           | Briefing + persona + estilo    | Roteiro de 6 cenas (JSON)    | conforme o modo¹   |
 | 5 | Diretor de Vídeo     | Cena + narração + estilo       | Prompt otimizado para Veo    | `gemini-2.5-flash` |
 | 6 | Renderizador         | Prompt + foto de referência    | Clipe de 8s (blob)           | `veo-3.1-generate-preview` |
@@ -78,6 +79,13 @@ porque nunca chega ao modelo.
 todo tier do modelo aceita esse campo; quando a API responde 400, o renderizador
 repete a chamada só com texto em vez de falhar a cena. Dá para desligar pelo
 toggle "Consistência de Personagem".
+
+**O diretor assiste, quando pode.** O Gemini Omni aceita vídeo na entrada e
+responde em texto, então enviar o arquivo de referência produz uma análise do
+que está de fato no vídeo — duração dos planos, gancho, áudio, enquadramento,
+cor. Sem o arquivo, o caminho por URL continua disponível, mas o modelo não abre
+o link: ele deduz pela plataforma e pelo perfil. O vídeo vai inline como base64,
+daí o teto de `MAX_REFERENCE_VIDEO_BYTES`, e não é salvo junto com o projeto.
 
 **Concorrência limitada.** A cota por minuto do Veo não absorve 6 renderizações
 simultâneas. `VIDEO_RENDER_CONCURRENCY` (padrão 2) controla quantas cenas rodam
@@ -153,8 +161,9 @@ components/steps/          Uma etapa do fluxo por arquivo
 - **Os clipes não sobrevivem ao reload.** Salvar o projeto guarda textos e
   imagens no `localStorage`, mas vídeos são blobs em memória — ao recarregar, as
   cenas voltam para "pendente".
-- **A análise de referência não abre a URL.** O modelo não navega; ele infere as
-  diretrizes a partir da plataforma e do perfil na URL. O texto gerado é
-  editável antes de entrar no roteiro.
+- **A análise por URL não abre o link.** O modelo não navega; ele infere as
+  diretrizes a partir da plataforma e do perfil na URL. Para uma análise fiel,
+  envie o arquivo de vídeo — aí o Omni assiste de verdade. O texto gerado é
+  editável antes de entrar no roteiro nos dois casos.
 - **A montagem roda em tempo real.** Unir 6 clipes de 8s leva cerca de 48s,
   porque a gravação acompanha a reprodução.

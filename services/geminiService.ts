@@ -5,7 +5,15 @@ import {
   GenerateContentResponse,
   VideoGenerationReferenceType,
 } from "@google/genai";
-import { ScriptChunk, VideoStyle, ScriptMode, AspectRatio, SocialContentGenerated, ImagePayload } from "../types";
+import {
+  ScriptChunk,
+  VideoStyle,
+  ScriptMode,
+  AspectRatio,
+  SocialContentGenerated,
+  ImagePayload,
+  MediaPayload,
+} from "../types";
 import { MAX_CHUNKS, CHUNK_DURATION, VIDEO_POLL_INTERVAL_MS, VIDEO_POLL_TIMEOUT_MS } from "../constants";
 import {
   DEFAULT_RETRY_POLICY,
@@ -165,6 +173,12 @@ const socialContentSchema = {
 
 // --- Style presets ----------------------------------------------------------
 
+/**
+ * Omni takes image, video and audio in and answers in text. It is the only
+ * model here that can watch a clip, so it owns the reference analysis.
+ */
+const OMNI_MODEL = "gemini-omni-flash-preview";
+
 const stylePrompts: Record<VideoStyle, string> = {
   cinematic: "Cinematic shot, hyper-realistic, high detail, professional color grading, 8k, smooth motion",
   animation: "3D animation style, vibrant, high quality render, Pixar-like, expressive character",
@@ -245,6 +259,46 @@ Seja direto e criativo. Responda em Português do Brasil (PT-BR).`;
  * The model cannot open the link, so it reasons from the platform and handle in
  * the URL — this is style guidance, not a transcript of that specific video.
  */
+/**
+ * Director agent, watching instead of guessing.
+ *
+ * `analyzeReferenceStyle` below can only reason from the text of a URL — the
+ * model never opens the link. This one sends the actual footage to Gemini Omni,
+ * which takes video in and answers in text, so the direction it produces
+ * describes the reference rather than the platform it came from.
+ */
+export async function analyzeReferenceVideo(video: MediaPayload, note?: string | null): Promise<string> {
+  const ai = getClient();
+
+  const prompt = `Você está assistindo a um vídeo de referência que o usuário quer emular.
+${note ? `\nObservação do usuário sobre a referência: ${note}\n` : ""}
+Descreva o que você observa, não o que costuma funcionar no formato. Se algo não der para determinar pelo vídeo, diga que não dá.
+
+Produza no máximo 6 linhas, uma diretriz por linha, começando com "> ", cobrindo:
+- Ritmo: duração média dos planos, em segundos
+- Gancho: o que acontece nos 3 primeiros segundos
+- Áudio: fala, música, ruído ambiente, e como se sobrepõem
+- Elementos na tela: legendas, texto, cortes gráficos
+- Enquadramento e câmera: distância, altura, movimento
+- Cor e luz: temperatura, contraste, fonte de luz
+
+Formato: texto puro, uma diretriz por linha. Sem markdown, sem introdução. Idioma: Português do Brasil.`;
+
+  const interaction = await retryWithBackoff(() =>
+    ai.interactions.create({
+      model: OMNI_MODEL,
+      input: [
+        { type: "video", mime_type: video.mimeType, data: video.data },
+        { type: "text", text: prompt },
+      ],
+    })
+  );
+
+  const text = interaction.output_text?.trim();
+  if (!text) throw emptyResponseError("a análise do vídeo de referência");
+  return text;
+}
+
 export async function analyzeReferenceStyle(referenceUrl: string): Promise<string> {
 
   const prompt = `Atue como um diretor criativo especializado em vídeo social de formato curto.

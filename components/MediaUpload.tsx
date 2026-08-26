@@ -1,16 +1,28 @@
 /**
- * Image picker with a real label, keyboard access and drag-and-drop.
+ * File picker with a real label, keyboard access and drag-and-drop.
  *
- * The previous version stretched a transparent `<input type="file">` over the
+ * The original version stretched a transparent `<input type="file">` over the
  * card: no label, no focus ring, and the only feedback for an oversized file
  * was a native `alert()`.
  */
 
 import React, { useId, useRef, useState } from 'react';
-import { MAX_IMAGE_BYTES } from '../constants';
+import { MAX_IMAGE_BYTES, MAX_REFERENCE_VIDEO_BYTES } from '../constants';
 import { Spinner } from './ui';
 
-const ACCEPTED = 'image/png,image/jpeg,image/webp';
+type MediaKind = 'image' | 'video';
+
+const ACCEPT: Record<MediaKind, string> = {
+  image: 'image/png,image/jpeg,image/webp',
+  video: 'video/mp4,video/webm,video/quicktime',
+};
+
+const MAX_BYTES: Record<MediaKind, number> = {
+  image: MAX_IMAGE_BYTES,
+  video: MAX_REFERENCE_VIDEO_BYTES,
+};
+
+const NOUN: Record<MediaKind, string> = { image: 'imagem', video: 'vídeo' };
 
 const UploadGlyph: React.FC = () => (
   <svg viewBox="0 0 24 24" className="h-6 w-6" fill="none" stroke="currentColor" strokeWidth="1.5">
@@ -19,17 +31,17 @@ const UploadGlyph: React.FC = () => (
   </svg>
 );
 
-export interface ImageUploadProps {
+export interface MediaUploadProps {
   label: string;
   /** Shown under the label; also read by screen readers as the field's hint. */
   hint?: string;
+  media?: MediaKind;
   file: File | null;
   onSelect: (file: File | null) => void;
   /** Existing preview, e.g. restored from a saved project. */
   previewUrl: string | null;
   onError: (message: string) => void;
-  /** Aspect of the preview frame. */
-  aspect?: 'square' | 'video';
+  aspect?: 'square' | 'video' | 'portrait';
   /** Contain instead of cover — right for logos on a plain background. */
   fit?: 'cover' | 'contain';
   busy?: boolean;
@@ -38,9 +50,10 @@ export interface ImageUploadProps {
   required?: boolean;
 }
 
-export const ImageUpload: React.FC<ImageUploadProps> = ({
+export const MediaUpload: React.FC<MediaUploadProps> = ({
   label,
   hint,
+  media = 'image',
   file,
   onSelect,
   previewUrl,
@@ -57,24 +70,32 @@ export const ImageUpload: React.FC<ImageUploadProps> = ({
   const inputRef = useRef<HTMLInputElement>(null);
   const [dragging, setDragging] = useState(false);
 
+  const limit = MAX_BYTES[media];
+
   const accept = (candidate: File | undefined) => {
     if (!candidate) return;
-    if (!candidate.type.startsWith('image/')) {
-      onError(`"${candidate.name}" não é uma imagem.`);
+    if (!candidate.type.startsWith(`${media}/`)) {
+      onError(`"${candidate.name}" não é um arquivo de ${NOUN[media]}.`);
       return;
     }
-    if (candidate.size > MAX_IMAGE_BYTES) {
+    if (candidate.size > limit) {
       onError(
         `"${candidate.name}" tem ${(candidate.size / 1024 / 1024).toFixed(1)}MB. O limite é ${Math.round(
-          MAX_IMAGE_BYTES / 1024 / 1024
+          limit / 1024 / 1024
         )}MB.`
       );
       return;
     }
+    onError('');
     onSelect(candidate);
   };
 
-  const frame = aspect === 'square' ? 'aspect-square' : 'aspect-video';
+  const frame =
+    aspect === 'square' ? 'aspect-square' : aspect === 'portrait' ? 'aspect-[9/16]' : 'aspect-video';
+
+  // A video preview owns its own controls, so the click-anywhere overlay would
+  // sit on top of them. There the header's "Trocar" button does that job.
+  const overlayPicks = !(media === 'video' && previewUrl);
 
   return (
     <div className="space-y-2">
@@ -88,16 +109,27 @@ export const ImageUpload: React.FC<ImageUploadProps> = ({
           )}
         </label>
         {file && !disabled && (
-          <button
-            type="button"
-            onClick={() => {
-              onSelect(null);
-              if (inputRef.current) inputRef.current.value = '';
-            }}
-            className="rounded text-xs text-ink-3 transition-colors hover:text-danger"
-          >
-            Remover
-          </button>
+          <span className="flex items-center gap-3">
+            {!overlayPicks && (
+              <button
+                type="button"
+                onClick={() => inputRef.current?.click()}
+                className="rounded text-xs text-ink-3 transition-colors hover:text-ink"
+              >
+                Trocar
+              </button>
+            )}
+            <button
+              type="button"
+              onClick={() => {
+                onSelect(null);
+                if (inputRef.current) inputRef.current.value = '';
+              }}
+              className="rounded text-xs text-ink-3 transition-colors hover:text-danger"
+            >
+              Remover
+            </button>
+          </span>
         )}
       </div>
 
@@ -126,7 +158,7 @@ export const ImageUpload: React.FC<ImageUploadProps> = ({
           ref={inputRef}
           id={inputId}
           type="file"
-          accept={ACCEPTED}
+          accept={ACCEPT[media]}
           disabled={disabled}
           aria-describedby={hint ? hintId : undefined}
           onChange={(e) => {
@@ -138,29 +170,37 @@ export const ImageUpload: React.FC<ImageUploadProps> = ({
         />
 
         {previewUrl ? (
-          <img
-            src={previewUrl}
-            alt=""
-            className={`h-full w-full ${fit === 'contain' ? 'object-contain p-6' : 'object-cover'}`}
-          />
+          media === 'video' ? (
+            <video src={previewUrl} controls className="h-full w-full bg-black object-contain" />
+          ) : (
+            <img
+              src={previewUrl}
+              alt=""
+              className={`h-full w-full ${fit === 'contain' ? 'object-contain p-6' : 'object-cover'}`}
+            />
+          )
         ) : null}
 
         {/* The label covers the frame so the whole area is clickable, while the
             visually-hidden input keeps the semantics. `peer-focus-visible`
             carries the focus ring back onto the frame, which a `sr-only` input
             could never show on its own. */}
-        <label
-          htmlFor={inputId}
-          className={`absolute inset-0 flex cursor-pointer flex-col items-center justify-center gap-2 rounded text-center transition-colors
-            peer-focus-visible:outline peer-focus-visible:outline-2 peer-focus-visible:-outline-offset-2 peer-focus-visible:outline-accent-hover ${
-              previewUrl ? 'opacity-0 hover:bg-bg/70 hover:opacity-100 peer-focus-visible:opacity-100' : 'text-ink-3 hover:text-ink-2'
-            } ${disabled ? 'pointer-events-none' : ''}`}
-        >
-          <UploadGlyph />
-          <span className="px-3 text-xs font-medium">
-            {previewUrl ? 'Trocar imagem' : 'Clique ou arraste uma imagem'}
-          </span>
-        </label>
+        {overlayPicks && (
+          <label
+            htmlFor={inputId}
+            className={`absolute inset-0 flex cursor-pointer flex-col items-center justify-center gap-2 rounded text-center transition-colors
+              peer-focus-visible:outline peer-focus-visible:outline-2 peer-focus-visible:-outline-offset-2 peer-focus-visible:outline-accent-hover ${
+                previewUrl
+                  ? 'opacity-0 hover:bg-bg/70 hover:opacity-100 peer-focus-visible:opacity-100'
+                  : 'text-ink-3 hover:text-ink-2'
+              } ${disabled ? 'pointer-events-none' : ''}`}
+          >
+            <UploadGlyph />
+            <span className="px-3 text-xs font-medium">
+              {previewUrl ? `Trocar ${NOUN[media]}` : `Clique ou arraste um arquivo de ${NOUN[media]}`}
+            </span>
+          </label>
+        )}
 
         {busy && (
           <div className="absolute inset-0 flex flex-col items-center justify-center gap-2 bg-bg/85 text-accent-ink">

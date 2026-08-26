@@ -20,6 +20,7 @@ import {
 } from './constants';
 import {
   analyzeReferenceStyle,
+  analyzeReferenceVideo,
   generateCampaignBriefing,
   generateInfluencerPersona,
   generateScript,
@@ -31,7 +32,7 @@ import {
 } from './services/geminiService';
 import { mergeVideoClips } from './services/videoMerger';
 import { exportBriefingPdf } from './services/briefingPdf';
-import { dataUrlToFile, fileToDataUrl, fileToImagePayload, mapWithConcurrency } from './utils/files';
+import { dataUrlToFile, fileToDataUrl, fileToMediaPayload, mapWithConcurrency } from './utils/files';
 import Header from './components/Header';
 import { StepDescriptor, StepFooter, Stepper } from './components/Stepper';
 import { PersonaStep } from './components/steps/PersonaStep';
@@ -117,6 +118,8 @@ function App() {
   const [logoImageFile, setLogoImageFile] = useState<File | null>(null);
   const [isGeneratingBriefing, setIsGeneratingBriefing] = useState(false);
   const [referenceUrl, setReferenceUrl] = useState('');
+  const [referenceVideoFile, setReferenceVideoFile] = useState<File | null>(null);
+  const [referenceVideoPreview, setReferenceVideoPreview] = useState<string | null>(null);
   const [styleAnalysis, setStyleAnalysis] = useState('');
   const [isAnalyzingStyle, setIsAnalyzingStyle] = useState(false);
   const [isExportingPdf, setIsExportingPdf] = useState(false);
@@ -233,6 +236,20 @@ function App() {
     setPreviews((prev) => ({ ...prev, [kind]: value }));
   }, []);
 
+  const selectReferenceVideo = useCallback(
+    (file: File | null) => {
+      setReferenceVideoFile(file);
+      setStyleAnalysis('');
+      // A data URL for a multi-megabyte video would be wasteful; the preview
+      // only needs a handle to the local file.
+      setReferenceVideoPreview((previous) => {
+        if (previous) URL.revokeObjectURL(previous);
+        return file ? URL.createObjectURL(file) : null;
+      });
+    },
+    []
+  );
+
   const selectImage = useCallback(
     (kind: PreviewKind, file: File | null, onReady?: (file: File) => void) => {
       const setFile =
@@ -264,7 +281,7 @@ function App() {
     setIsAnalyzingInfluencer(true);
     setError(null);
     try {
-      setCharacterDescription(await generateInfluencerPersona(await fileToImagePayload(file)));
+      setCharacterDescription(await generateInfluencerPersona(await fileToMediaPayload(file)));
     } catch (e) {
       console.error(e);
       setError(`Erro ao analisar a imagem da influencer. ${humanizeError(e)}`);
@@ -278,8 +295,8 @@ function App() {
     setIsGeneratingBriefing(true);
     setError(null);
     try {
-      const product = await fileToImagePayload(productImageFile);
-      const logo = logoImageFile ? await fileToImagePayload(logoImageFile) : null;
+      const product = await fileToMediaPayload(productImageFile);
+      const logo = logoImageFile ? await fileToMediaPayload(logoImageFile) : null;
       setTopic(await generateCampaignBriefing(product, logo));
     } catch (e) {
       console.error(e);
@@ -302,6 +319,25 @@ function App() {
       setIsAnalyzingStyle(false);
     }
   }, [referenceUrl]);
+
+  /**
+   * The video path is the accurate one: Omni actually watches the clip, while
+   * the URL path can only reason about the platform in the link.
+   */
+  const handleAnalyzeReferenceVideo = useCallback(async () => {
+    if (!referenceVideoFile) return;
+    setIsAnalyzingStyle(true);
+    setError(null);
+    try {
+      const payload = await fileToMediaPayload(referenceVideoFile, 'video/mp4');
+      setStyleAnalysis(await analyzeReferenceVideo(payload, referenceUrl.trim() || null));
+    } catch (e) {
+      console.error(e);
+      setError(`Erro ao analisar o vídeo de referência. ${humanizeError(e)}`);
+    } finally {
+      setIsAnalyzingStyle(false);
+    }
+  }, [referenceVideoFile, referenceUrl]);
 
   const handleExportPdf = useCallback(async () => {
     if (!topic || isExportingPdf) return;
@@ -334,8 +370,8 @@ function App() {
     setSocialContent(null);
 
     try {
-      const product = await fileToImagePayload(productImageFile);
-      const logo = logoImageFile ? await fileToImagePayload(logoImageFile) : null;
+      const product = await fileToMediaPayload(productImageFile);
+      const logo = logoImageFile ? await fileToMediaPayload(logoImageFile) : null;
 
       const chunks = await generateScript(
         topic,
@@ -432,7 +468,7 @@ function App() {
 
       const characterImage: ImagePayload | null =
         useCharacterReference && influencerImageFile
-          ? await fileToImagePayload(influencerImageFile).catch(() => null)
+          ? await fileToMediaPayload(influencerImageFile).catch(() => null)
           : null;
 
       let refunded = 0;
@@ -673,11 +709,12 @@ function App() {
     setIsMerging(false);
     setMergedVideoUrl(null);
     setReferenceUrl('');
+    selectReferenceVideo(null);
     setStyleAnalysis('');
     setSocialContent(null);
     setConfirmingRender(false);
     setCurrentStep('persona');
-  }, []);
+  }, [selectReferenceVideo]);
 
   // --- Step model -----------------------------------------------------------
 
@@ -934,6 +971,10 @@ function App() {
               isGeneratingBriefing={isGeneratingBriefing}
               referenceUrl={referenceUrl}
               setReferenceUrl={setReferenceUrl}
+              referenceVideoFile={referenceVideoFile}
+              referenceVideoPreview={referenceVideoPreview}
+              onSelectReferenceVideo={selectReferenceVideo}
+              onAnalyzeVideo={() => void handleAnalyzeReferenceVideo()}
               styleAnalysis={styleAnalysis}
               setStyleAnalysis={setStyleAnalysis}
               onAnalyzeStyle={() => void handleAnalyzeStyle()}

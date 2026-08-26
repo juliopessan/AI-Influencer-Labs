@@ -1,4 +1,4 @@
-import { ImagePayload } from '../types';
+import { MediaPayload } from '../types';
 
 /** Reads a File as a `data:` URL, suitable for previews and localStorage. */
 export function fileToDataUrl(file: File): Promise<string> {
@@ -30,13 +30,13 @@ export function dataUrlToFile(dataUrl: string, filename: string): File {
 }
 
 /** Converts a File into the inline payload the Gemini API expects. */
-export async function fileToImagePayload(file: File): Promise<ImagePayload> {
+export async function fileToMediaPayload(file: File, fallbackMime = 'image/png'): Promise<MediaPayload> {
   const dataUrl = await fileToDataUrl(file);
   const base64 = dataUrl.split(',')[1];
   if (!base64) {
-    throw new Error('Não foi possível codificar a imagem.');
+    throw new Error('Não foi possível codificar o arquivo.');
   }
-  return { data: base64, mimeType: file.type || 'image/png' };
+  return { data: base64, mimeType: file.type || fallbackMime };
 }
 
 /**

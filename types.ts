@@ -1,9 +1,12 @@
 
-/** Base64 image payload as the Gemini API expects it (no data-URL prefix). */
-export interface ImagePayload {
+/** Base64 media payload as the Gemini API expects it (no data-URL prefix). */
+export interface MediaPayload {
   data: string;
   mimeType: string;
 }
+
+/** Images are the most common payload; the shape is identical. */
+export type ImagePayload = MediaPayload;
 
 export interface ScriptChunk {
   id: string;

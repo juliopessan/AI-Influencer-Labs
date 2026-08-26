@@ -20,3 +20,10 @@ export const TRANSITION_DURATION_MS = 1000;
 
 /** Upload ceiling per image, matching what the API accepts inline. */
 export const MAX_IMAGE_BYTES = 4 * 1024 * 1024;
+
+/**
+ * Ceiling for the reference video sent to the Omni model. It travels inline as
+ * base64, which inflates the request by about a third, so this stays well under
+ * the API's request size limit. Enough for a minute of vertical social video.
+ */
+export const MAX_REFERENCE_VIDEO_BYTES = 8 * 1024 * 1024;

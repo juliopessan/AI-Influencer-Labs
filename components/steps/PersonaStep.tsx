@@ -1,5 +1,5 @@
 import React from 'react';
-import { ImageUpload } from '../ImageUpload';
+import { MediaUpload } from '../MediaUpload';
 import { Badge, EmptyState, Panel, PanelHeader, Spinner } from '../ui';
 
 export interface PersonaStepProps {
@@ -21,7 +21,7 @@ export const PersonaStep: React.FC<PersonaStepProps> = ({
 }) => (
   <div className="grid items-start gap-6 lg:grid-cols-[320px_1fr]">
     <Panel className="p-5">
-      <ImageUpload
+      <MediaUpload
         label="Foto da influencer"
         hint="Rosto visível, boa luz. É essa imagem que mantém a aparência estável entre as cenas."
         file={influencerImageFile}

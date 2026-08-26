@@ -45,6 +45,12 @@ vezes.
 `await` dentro do `requestAnimationFrame`: isso congela o canvas capturado. O
 próximo clipe é pré-carregado em paralelo e o laço só consulta a flag.
 
+**Só o Omni enxerga vídeo.** `gemini-omni-flash-preview` aceita imagem, vídeo e
+áudio na entrada e responde apenas em texto — o nome sugere saída multimodal,
+mas não é isso. Ele fala pela Interactions API (`ai.interactions.create`), não
+por `generateContent`, e exige `@google/genai` >= 2. A resposta vem em
+`output_text`; não vale a pena caminhar pela árvore de `steps`.
+
 **Concorrência do Veo é limitada de propósito.** `VIDEO_RENDER_CONCURRENCY = 2`.
 Disparar as 6 cenas juntas estoura a cota por minuto.
 
