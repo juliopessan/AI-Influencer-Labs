@@ -1,4 +1,10 @@
 
+/** Base64 image payload as the Gemini API expects it (no data-URL prefix). */
+export interface ImagePayload {
+  data: string;
+  mimeType: string;
+}
+
 export interface ScriptChunk {
   id: string;
   scene: string;
@@ -7,11 +13,6 @@ export interface ScriptChunk {
 
 export type Script = ScriptChunk[];
 
-export interface GeneratedScriptResponse {
-  characterDescription: string;
-  script: Script;
-}
-
 export type VideoChunkStatus = 'pending' | 'generating' | 'done' | 'error';
 
 export interface VideoChunk {
@@ -19,6 +20,12 @@ export interface VideoChunk {
   scriptChunk: ScriptChunk;
   videoUrl: string | null;
   status: VideoChunkStatus;
+  /** Veo prompt produced by the director agent, kept for transparency and retries. */
+  optimizedPrompt?: string;
+  /** Human-readable reason shown on the scene card when status is 'error'. */
+  errorMessage?: string;
+  /** Current stage of the render, surfaced while status is 'generating'. */
+  progressMessage?: string;
 }
 
 export type VideoStyle = 'cinematic' | 'animation' | 'documentary' | 'vlog';
@@ -41,15 +48,18 @@ export interface SocialContentGenerated {
 
 // Interface para salvar o projeto no LocalStorage
 export interface SavedProjectState {
+  version: number;
   timestamp: number;
   topic: string;
   characterDescription: string | null;
   script: Script | null;
   credits: number;
   referenceUrl: string;
+  styleAnalysis: string;
   videoStyle: VideoStyle;
   scriptMode: ScriptMode;
   aspectRatio: AspectRatio;
+  useCharacterReference: boolean;
   socialContent: SocialContentGenerated | null;
   // Imagens salvas como Base64 Data Strings
   influencerImageBase64: string | null;

@@ -1,42 +1,43 @@
-import React, { useState, useEffect } from 'react';
-// FIX: import SocialContentGenerated type
+import React, { useState } from 'react';
 import { VideoChunk, VideoStyle, AspectRatio, SocialContentGenerated } from '../types';
+import { VIDEO_CHUNK_GENERATION_COST } from '../constants';
 import { Loader } from './Loader';
-// FIX: import ShareNetworkIcon
 import { VideoIcon, DownloadIcon, StyleIcon, CheckIcon, ShareNetworkIcon } from './Icons';
 
 interface VideoDisplayProps {
   videos: VideoChunk[];
   onGenerate: () => void;
+  onRetryFailed: () => void;
   isGenerating: boolean;
   isMerging: boolean;
+  mergeStage: string;
   mergedVideoUrl: string | null;
+  mergedVideoExtension: string;
   totalCost: number;
   videoStyle: VideoStyle;
   setVideoStyle: (style: VideoStyle) => void;
   aspectRatio: AspectRatio;
   setAspectRatio: (ratio: AspectRatio) => void;
-  // FIX: add socialContent prop
+  useCharacterReference: boolean;
+  setUseCharacterReference: (enabled: boolean) => void;
+  hasInfluencerImage: boolean;
   socialContent: SocialContentGenerated | null;
 }
 
-const GenerationProgressTracker: React.FC = () => {
-    const steps = [
-        "Inicializando Agente IA",
-        "Análise Contextual",
-        "Síntese de Áudio Neural",
-        "Renderização de Vídeo Veo"
-    ];
-    const [currentStep, setCurrentStep] = useState(0);
+/** Stages emitted by the render pipeline, in the order they occur. */
+const RENDER_STAGES = [
+    "Na fila",
+    "Escrevendo prompt de direção",
+    "Enviando cena para o Veo",
+    "Renderizando",
+    "Baixando clipe",
+];
 
-    useEffect(() => {
-        const timers: number[] = [];
-        // Use window.setTimeout to ensure return type is number in browser environment
-        timers.push(window.setTimeout(() => setCurrentStep(1), 1500)); 
-        timers.push(window.setTimeout(() => setCurrentStep(2), 4500)); 
-        timers.push(window.setTimeout(() => setCurrentStep(3), 9000)); 
-        return () => timers.forEach(clearTimeout);
-    }, []);
+const GenerationProgressTracker: React.FC<{ stage?: string }> = ({ stage }) => {
+    const steps = RENDER_STAGES;
+    // Reflects the actual pipeline stage rather than a timer-driven guess.
+    const matchedIndex = stage ? steps.indexOf(stage) : -1;
+    const currentStep = matchedIndex >= 0 ? matchedIndex : 0;
 
     return (
         <div className="absolute inset-0 flex flex-col items-center justify-center bg-black/80 backdrop-blur-md z-20 p-6 rounded-2xl">
@@ -54,8 +55,14 @@ const GenerationProgressTracker: React.FC = () => {
                     ))}
                 </ul>
                 <div className="mt-6 h-1 w-full bg-gray-800 rounded-full overflow-hidden relative">
-                     <div className="absolute top-0 left-0 h-full bg-cyan-500 shadow-[0_0_10px_#06b6d4] animate-[width_15s_ease-out_forwards]" style={{width: '0%'}}></div>
+                     <div
+                        className="absolute top-0 left-0 h-full bg-cyan-500 shadow-[0_0_10px_#06b6d4] transition-[width] duration-700 ease-out"
+                        style={{ width: `${((currentStep + 1) / steps.length) * 100}%` }}
+                     ></div>
                 </div>
+                {matchedIndex < 0 && stage && (
+                    <p className="mt-3 text-[10px] text-cyan-300/80 tracking-wider">{stage}</p>
+                )}
             </div>
         </div>
     );
@@ -83,17 +90,20 @@ const VideoChunkCard: React.FC<{ chunk: VideoChunk, index: number, aspectRatio: 
             </div>
         )}
         
-        {chunk.status === 'generating' && <GenerationProgressTracker />}
-        
+        {chunk.status === 'generating' && <GenerationProgressTracker stage={chunk.progressMessage} />}
+
         {chunk.status === 'done' && chunk.videoUrl && (
            <video controls src={chunk.videoUrl} className="w-full h-full object-cover"></video>
         )}
-        
+
         {chunk.status === 'error' && (
             <div className="text-center text-red-400 p-4 bg-red-900/20 backdrop-blur w-full h-full flex flex-col items-center justify-center border-2 border-red-500/20">
                 <span className="text-3xl mb-3 drop-shadow-lg">⚠️</span>
-                <span className="text-xs font-bold uppercase tracking-widest">Falha no Sistema</span>
-                <span className="text-[10px] mt-1 opacity-70">Tente gerar novamente</span>
+                <span className="text-xs font-bold uppercase tracking-widest">Falha na Renderização</span>
+                {/* Surface the actual reason instead of a generic "system failure". */}
+                <span className="text-[10px] mt-2 opacity-80 leading-relaxed line-clamp-4">
+                    {chunk.errorMessage ?? 'Tente gerar novamente'}
+                </span>
             </div>
         )}
       </div>
@@ -101,7 +111,7 @@ const VideoChunkCard: React.FC<{ chunk: VideoChunk, index: number, aspectRatio: 
   );
 };
 
-const FinalVideoPlayer: React.FC<{ url: string, aspectRatio: AspectRatio }> = ({ url, aspectRatio }) => {
+const FinalVideoPlayer: React.FC<{ url: string, aspectRatio: AspectRatio, extension: string }> = ({ url, aspectRatio, extension }) => {
     const aspectRatioClass = aspectRatio === '16:9' ? 'aspect-video' : 'aspect-[9/16]';
     return (
         <div className="flex flex-col items-center animate-fade-in-up w-full">
@@ -110,7 +120,7 @@ const FinalVideoPlayer: React.FC<{ url: string, aspectRatio: AspectRatio }> = ({
             </div>
             <a 
                 href={url} 
-                download="campanha_ugc_ia.webm"
+                download={`campanha_ugc_ia.${extension}`}
                 className="mt-8 group relative inline-flex items-center justify-center px-10 py-4 font-bold text-white transition-all duration-200 bg-cyan-600 rounded-full focus:outline-none hover:bg-cyan-500 hover:scale-105 hover:shadow-[0_0_30px_rgba(34,211,238,0.6)] overflow-hidden"
             >
                 <span className="absolute inset-0 w-full h-full -mt-1 rounded-lg opacity-30 bg-gradient-to-b from-transparent via-transparent to-white/20"></span>
@@ -121,7 +131,7 @@ const FinalVideoPlayer: React.FC<{ url: string, aspectRatio: AspectRatio }> = ({
     );
 }
 
-const MergingLoader: React.FC = () => (
+const MergingLoader: React.FC<{ stage?: string }> = ({ stage }) => (
     <div className="flex flex-col items-center justify-center space-y-6 my-12 h-64 bg-black/30 rounded-3xl border border-cyan-500/20 backdrop-blur-md relative overflow-hidden">
         <div className="absolute inset-0 bg-gradient-to-b from-cyan-500/5 to-transparent animate-pulse"></div>
         <div className="relative w-24 h-24">
@@ -135,7 +145,7 @@ const MergingLoader: React.FC = () => (
         <div className="text-center relative z-10">
             <p className="text-cyan-400 font-bold tracking-[0.2em] text-sm uppercase animate-pulse">Masterizando Vídeo</p>
             <p className="text-[10px] text-gray-400 mt-2 font-mono bg-black/40 px-3 py-1 rounded-full inline-block border border-white/5">
-                Unindo Clipes &bull; Normalizando Áudio
+                {stage || 'Unindo Clipes • Normalizando Áudio'}
             </p>
         </div>
     </div>
@@ -214,7 +224,50 @@ const AspectRatioSelector: React.FC<{
     );
 };
 
-// FIX: Add SocialContentDisplay component
+/**
+ * Sends the influencer's own photo to Veo as an asset reference, which is what
+ * keeps her face from drifting between scenes. Not every model tier accepts it,
+ * so the renderer silently falls back to a text-only prompt when rejected.
+ */
+const CharacterReferenceToggle: React.FC<{
+    enabled: boolean;
+    onToggle: (enabled: boolean) => void;
+    hasInfluencerImage: boolean;
+    disabled: boolean;
+}> = ({ enabled, onToggle, hasInfluencerImage, disabled }) => {
+    const isOn = enabled && hasInfluencerImage;
+
+    return (
+        <div className="mb-6 flex items-start justify-between gap-4 bg-black/20 border border-white/5 rounded-xl p-4">
+            <div>
+                <h4 className="text-xs font-bold text-gray-300 uppercase tracking-widest">Consistência de Personagem</h4>
+                <p className="text-[11px] text-gray-500 mt-1 leading-relaxed max-w-sm">
+                    {hasInfluencerImage
+                        ? 'Envia a foto da influencer como referência visual em cada cena, reduzindo variações de rosto e roupa.'
+                        : 'Envie uma foto da influencer para habilitar a referência visual.'}
+                </p>
+            </div>
+            <button
+                type="button"
+                role="switch"
+                aria-checked={isOn}
+                aria-label="Consistência de personagem"
+                onClick={() => onToggle(!enabled)}
+                disabled={disabled || !hasInfluencerImage}
+                className={`shrink-0 mt-1 w-12 h-6 rounded-full border transition-colors relative disabled:opacity-40 disabled:cursor-not-allowed ${
+                    isOn ? 'bg-cyan-500/30 border-cyan-500' : 'bg-gray-800 border-gray-700'
+                }`}
+            >
+                <span
+                    className={`absolute top-1/2 -translate-y-1/2 w-4 h-4 rounded-full transition-all ${
+                        isOn ? 'left-6 bg-cyan-400 shadow-[0_0_10px_#22d3ee]' : 'left-1 bg-gray-500'
+                    }`}
+                />
+            </button>
+        </div>
+    );
+};
+
 const SocialContentDisplay: React.FC<{ content: SocialContentGenerated }> = ({ content }) => {
   const [activeTab, setActiveTab] = useState<'instagram' | 'tiktok' | 'youtube'>('instagram');
 
@@ -260,9 +313,16 @@ const SocialContentDisplay: React.FC<{ content: SocialContentGenerated }> = ({ c
   );
 };
 
-const VideoDisplay: React.FC<VideoDisplayProps> = ({ videos, onGenerate, isGenerating, isMerging, mergedVideoUrl, totalCost, videoStyle, setVideoStyle, aspectRatio, setAspectRatio, socialContent }) => {
+const VideoDisplay: React.FC<VideoDisplayProps> = ({
+  videos, onGenerate, onRetryFailed, isGenerating, isMerging, mergeStage,
+  mergedVideoUrl, mergedVideoExtension, totalCost, videoStyle, setVideoStyle,
+  aspectRatio, setAspectRatio, useCharacterReference, setUseCharacterReference,
+  hasInfluencerImage, socialContent,
+}) => {
   const [isConfirming, setIsConfirming] = useState(false);
   const allVideosDone = videos.length > 0 && videos.every(v => v.status === 'done');
+  const failedCount = videos.filter(v => v.status === 'error').length;
+  const retryCost = failedCount * VIDEO_CHUNK_GENERATION_COST;
 
   return (
     <div className="glass-panel p-8 rounded-3xl border border-white/10 flex flex-col h-full animate-fade-in-up shadow-2xl" style={{animationDelay: '0.1s'}}>
@@ -291,16 +351,15 @@ const VideoDisplay: React.FC<VideoDisplayProps> = ({ videos, onGenerate, isGener
       <div className="bg-gray-900/60 p-6 rounded-2xl border border-white/5 mt-auto backdrop-blur-xl relative overflow-hidden">
         {mergedVideoUrl ? (
             <>
-              <FinalVideoPlayer url={mergedVideoUrl} aspectRatio={aspectRatio} />
-              {/* FIX: Render SocialContentDisplay when content is available */}
+              <FinalVideoPlayer url={mergedVideoUrl} aspectRatio={aspectRatio} extension={mergedVideoExtension} />
               {socialContent && <SocialContentDisplay content={socialContent} />}
             </>
         ) : isMerging ? (
-            <MergingLoader />
+            <MergingLoader stage={mergeStage} />
         ) : (
             <>
                 <div className="grid grid-cols-1 md:grid-cols-2 gap-x-8">
-                    <StyleSelector 
+                    <StyleSelector
                         selectedStyle={videoStyle}
                         onSelectStyle={setVideoStyle}
                         disabled={isGenerating || allVideosDone || isConfirming}
@@ -311,6 +370,22 @@ const VideoDisplay: React.FC<VideoDisplayProps> = ({ videos, onGenerate, isGener
                         disabled={isGenerating || allVideosDone || isConfirming}
                     />
                 </div>
+
+                <CharacterReferenceToggle
+                    enabled={useCharacterReference}
+                    onToggle={setUseCharacterReference}
+                    hasInfluencerImage={hasInfluencerImage}
+                    disabled={isGenerating || allVideosDone || isConfirming}
+                />
+
+                {failedCount > 0 && !isGenerating && (
+                    <button
+                        onClick={onRetryFailed}
+                        className="w-full mb-4 py-4 rounded-xl font-bold text-white bg-gradient-to-r from-amber-600 to-orange-600 hover:shadow-[0_0_20px_rgba(217,119,6,0.4)] transition-all hover:-translate-y-0.5 uppercase tracking-wider text-sm"
+                    >
+                        Tentar novamente {failedCount} cena{failedCount > 1 ? 's' : ''} ({retryCost} créditos)
+                    </button>
+                )}
                 {isConfirming ? (
                   <div className="text-center p-6 bg-black/40 rounded-2xl border border-cyan-500/30 animate-fade-in-up shadow-2xl">
                       <h4 className="text-white font-bold text-lg mb-2">Confirmar Produção?</h4>

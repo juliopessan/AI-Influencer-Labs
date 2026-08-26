@@ -1,11 +1,10 @@
 
 import React, { useState, useEffect } from 'react';
-import { SCRIPT_GENERATION_COST } from '../constants';
+import { SCRIPT_GENERATION_COST, MAX_IMAGE_BYTES } from '../constants';
 import { Loader } from './Loader';
 import { MagicWandIcon, BrainCircuitIcon, UploadIcon, UserIcon, DownloadIcon, LinkIcon } from './Icons';
 import { ScriptMode } from '../types';
-import { jsPDF } from 'jspdf';
-import html2canvas from 'html2canvas';
+import { fileToDataUrl } from '../utils/files';
 
 interface ScriptGeneratorProps {
   // Influencer Step
@@ -28,6 +27,10 @@ interface ScriptGeneratorProps {
   // Reference URL Step
   referenceUrl: string;
   setReferenceUrl: (url: string) => void;
+  styleAnalysis: string;
+  setStyleAnalysis: (analysis: string) => void;
+  onAnalyzeStyle: () => void;
+  isAnalyzingStyle: boolean;
 
   onGenerate: () => void;
   isLoading: boolean;
@@ -91,16 +94,15 @@ const ScriptGenerator: React.FC<ScriptGeneratorProps> = ({
     productImageFile, setProductImageFile,
     logoImageFile, setLogoImageFile,
     onGenerateBriefing, isGeneratingBriefing,
-    referenceUrl, setReferenceUrl,
-    onGenerate, isLoading, 
-    scriptMode, setScriptMode 
+    referenceUrl, setReferenceUrl, styleAnalysis, setStyleAnalysis, onAnalyzeStyle, isAnalyzingStyle,
+    onGenerate, isLoading,
+    scriptMode, setScriptMode
 }) => {
   const [productPreview, setProductPreview] = useState<string | null>(null);
   const [logoPreview, setLogoPreview] = useState<string | null>(null);
   const [influencerPreview, setInfluencerPreview] = useState<string | null>(null);
-  const [isCheckingUrl, setIsCheckingUrl] = useState(false);
-  const [urlValid, setUrlValid] = useState(false);
-  const [styleAnalysis, setStyleAnalysis] = useState<string>('');
+  const [uploadError, setUploadError] = useState<string | null>(null);
+  const [isExportingPdf, setIsExportingPdf] = useState(false);
 
   const handleImageChange = (
       e: React.ChangeEvent<HTMLInputElement>,
@@ -108,49 +110,62 @@ const ScriptGenerator: React.FC<ScriptGeneratorProps> = ({
       setPreview: (preview: string | null) => void,
       callback?: (file: File) => void
   ) => {
-    if (e.target.files && e.target.files[0]) {
-      const file = e.target.files[0];
-      if (file.size > 4 * 1024 * 1024) { 
-        alert("Arquivo muito grande. Máximo 4MB.");
-        e.target.value = ''; 
-        return;
-      }
-      setImageFile(file);
-      const reader = new FileReader();
-      reader.onloadend = () => {
-        setPreview(reader.result as string);
-        if (callback) callback(file);
-      };
-      reader.readAsDataURL(file);
-    } else {
+    const file = e.target.files?.[0];
+    if (!file) {
       setImageFile(null);
       setPreview(null);
+      return;
     }
+
+    if (file.size > MAX_IMAGE_BYTES) {
+      setUploadError(`"${file.name}" tem mais de ${Math.round(MAX_IMAGE_BYTES / 1024 / 1024)}MB. Envie uma imagem menor.`);
+      e.target.value = '';
+      return;
+    }
+
+    setUploadError(null);
+    setImageFile(file);
+    fileToDataUrl(file)
+      .then(dataUrl => {
+        setPreview(dataUrl);
+        callback?.(file);
+      })
+      .catch(() => setUploadError('Não foi possível ler o arquivo selecionado.'));
   };
-  
+
+  // Rebuild previews for files restored from a saved project, where the upload
+  // handler never ran.
   useEffect(() => {
-    if (productImageFile && !productPreview) {
-        const reader = new FileReader();
-        reader.onloadend = () => setProductPreview(reader.result as string);
-        reader.readAsDataURL(productImageFile);
+    const pairs: Array<[File | null, string | null, (p: string | null) => void]> = [
+      [productImageFile, productPreview, setProductPreview],
+      [logoImageFile, logoPreview, setLogoPreview],
+      [influencerImageFile, influencerPreview, setInfluencerPreview],
+    ];
+
+    let cancelled = false;
+    for (const [file, preview, setter] of pairs) {
+      if (file && !preview) {
+        void fileToDataUrl(file).then(dataUrl => {
+          if (!cancelled) setter(dataUrl);
+        });
+      } else if (!file && preview) {
+        setter(null);
+      }
     }
-    if (logoImageFile && !logoPreview) {
-        const reader = new FileReader();
-        reader.onloadend = () => setLogoPreview(reader.result as string);
-        reader.readAsDataURL(logoImageFile);
-    }
-    if (influencerImageFile && !influencerPreview) {
-        const reader = new FileReader();
-        reader.onloadend = () => setInfluencerPreview(reader.result as string);
-        reader.readAsDataURL(influencerImageFile);
-    }
+    return () => {
+      cancelled = true;
+    };
   }, [productImageFile, logoImageFile, influencerImageFile, productPreview, logoPreview, influencerPreview]);
+
+  // Everything below is injected via innerHTML into the off-screen PDF
+  // scaffold, so every interpolated string has to be escaped first.
+  const escapeHtml = (text: string) =>
+    text.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;');
 
   // Helper to parse Markdown to semantic HTML string with inline styles
   const formatMarkdownToHTML = (text: string) => {
     if (!text) return '';
-    return text
-        .replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;")
+    return escapeHtml(text)
         .replace(/\*\*(.*?)\*\*/g, '<strong style="color: #000000; font-weight: 700;">$1</strong>')
         .replace(/\*(.*?)\*/g, '<em style="color: #475569;">$1</em>')
         // Fix Lists
@@ -163,16 +178,25 @@ const ScriptGenerator: React.FC<ScriptGeneratorProps> = ({
   };
 
   const handleDownloadPDF = async () => {
-    if (!topic) return;
-    
-    if (typeof window !== 'undefined' && !(window as any).html2canvas) {
-        (window as any).html2canvas = html2canvas;
-    }
+    if (!topic || isExportingPdf) return;
 
+    setIsExportingPdf(true);
+    setUploadError(null);
     try {
+        // jsPDF + html2canvas weigh more than the rest of the app combined and
+        // are only needed here, so they are fetched on demand.
+        const [{ jsPDF }, { default: html2canvas }] = await Promise.all([
+            import('jspdf'),
+            import('html2canvas'),
+        ]);
+
+        // jsPDF's html() looks for html2canvas on the window when it is not bundled.
+        if (!(window as any).html2canvas) {
+            (window as any).html2canvas = html2canvas;
+        }
+
         const doc = new jsPDF('p', 'pt', 'a4');
         const pdfWidth = 595.28;
-        const pdfHeight = 841.89; // A4 height points
         const date = new Date().toLocaleDateString('pt-BR', { day: 'numeric', month: 'long', year: 'numeric' });
 
         const tempContainer = document.createElement('div');
@@ -193,7 +217,6 @@ const ScriptGenerator: React.FC<ScriptGeneratorProps> = ({
         const brandGradient = 'linear-gradient(135deg, #090947 0%, #1a237e 100%)';
 
         // Styles
-        const pageContainerStyle = "width: 595px; min-height: 842px; position: relative; overflow: hidden; background: white;";
         const coverPageStyle = `width: 595px; height: 842px; background: ${brandGradient}; color: white; position: relative; display: flex; flex-direction: column; justify-content: center; padding: 60px; box-sizing: border-box;`;
         const contentPageStyle = "width: 595px; min-height: 842px; background: white; padding: 50px; padding-top: 40px; box-sizing: border-box; position: relative;";
         
@@ -271,7 +294,7 @@ const ScriptGenerator: React.FC<ScriptGeneratorProps> = ({
                              <div style="flex: 1;">
                                 <div style="font-size: 16px; font-weight: 700; color: ${brandDark}; margin-bottom: 10px;">Perfil Analítico</div>
                                 <div style="${bodyTextStyle} color: #64748b;">
-                                    ${characterDescription}
+                                    ${escapeHtml(characterDescription)}
                                 </div>
                              </div>
                         </div>
@@ -290,13 +313,13 @@ const ScriptGenerator: React.FC<ScriptGeneratorProps> = ({
                              ${referenceUrl ? `
                              <div style="margin-bottom: 15px; font-size: 10px; opacity: 0.8;">
                                  <strong style="text-transform: uppercase; color: ${brandBlue};">URL Fonte:</strong><br/>
-                                 ${referenceUrl}
+                                 ${escapeHtml(referenceUrl)}
                              </div>
                              ` : ''}
 
                              ${styleAnalysis ? `
                              <div style="font-family: 'Courier New', monospace; font-size: 10px; line-height: 1.5; border-left: 2px solid ${brandBlue}; padding-left: 10px;">
-                                 ${styleAnalysis.replace(/\n/g, '<br/>')}
+                                 ${escapeHtml(styleAnalysis).replace(/\n/g, '<br/>')}
                              </div>
                              ` : ''}
                          </div>
@@ -313,43 +336,34 @@ const ScriptGenerator: React.FC<ScriptGeneratorProps> = ({
         `;
 
         document.body.appendChild(tempContainer);
-        await new Promise(resolve => setTimeout(resolve, 800)); // Ensure render
+        try {
+            await new Promise(resolve => setTimeout(resolve, 800)); // Ensure render
 
-        await doc.html(tempContainer, {
-            callback: (doc) => {
-                doc.save('InfluencerLabs_Briefing_Executivo.pdf');
-                document.body.removeChild(tempContainer);
-            },
-            x: 0,
-            y: 0,
-            width: pdfWidth,
-            windowWidth: 595,
-            autoPaging: 'text',
-            html2canvas: {
-                scale: 2, // High res text
-                useCORS: true,
-                logging: false,
-                backgroundColor: '#ffffff'
-            }
-        });
-
+            await doc.html(tempContainer, {
+                callback: (rendered) => rendered.save('InfluencerLabs_Briefing_Executivo.pdf'),
+                x: 0,
+                y: 0,
+                width: pdfWidth,
+                windowWidth: 595,
+                autoPaging: 'text',
+                html2canvas: {
+                    scale: 2, // High res text
+                    useCORS: true,
+                    logging: false,
+                    backgroundColor: '#ffffff'
+                }
+            });
+        } finally {
+            // Always detach the off-screen scaffold, even if rendering threw.
+            tempContainer.remove();
+        }
     } catch (error) {
         console.error("Erro ao gerar PDF:", error);
-        alert("Erro ao gerar PDF.");
+        setUploadError("Não foi possível gerar o PDF do briefing.");
+    } finally {
+        setIsExportingPdf(false);
     }
   };
-
-  const handleCheckUrl = () => {
-      if(!referenceUrl) return;
-      setIsCheckingUrl(true);
-      setStyleAnalysis('');
-      // Simulation of analysis
-      setTimeout(() => {
-          setIsCheckingUrl(false);
-          setUrlValid(true);
-          setStyleAnalysis("ANÁLISE DE TENDÊNCIA VIRAL:\n> Ritmo: Edição dinâmica (Cortes a cada 1.5s)\n> Hook Visual: Transição 'Antes/Depois' nos primeiros 3s\n> Áudio: Trending Audio com narração sobreposta (Voiceover)\n> Elementos: Texto flutuante impactante e legenda colorida.");
-      }, 1500);
-  }
 
   return (
     <div className="max-w-5xl mx-auto glass-panel p-8 rounded-3xl animate-fade-in-up border-t border-white/10">
@@ -362,7 +376,14 @@ const ScriptGenerator: React.FC<ScriptGeneratorProps> = ({
         </h2>
         <p className="text-gray-400 max-w-xl mx-auto text-lg font-light">Defina sua estrela, seus produtos e deixe a IA criar a mágica.</p>
       </div>
-      
+
+      {uploadError && (
+        <div className="mb-8 flex items-start justify-between gap-4 bg-amber-500/10 border border-amber-500/40 text-amber-200 px-5 py-3 rounded-xl text-sm" role="alert">
+          <span>{uploadError}</span>
+          <button onClick={() => setUploadError(null)} className="text-amber-300 hover:text-white font-bold" aria-label="Fechar aviso">×</button>
+        </div>
+      )}
+
       <div className="space-y-12">
         {/* STEP 1: Influencer Identity */}
         <div className="border-b border-white/5 pb-8">
@@ -489,9 +510,9 @@ const ScriptGenerator: React.FC<ScriptGeneratorProps> = ({
                         Briefing & Contexto
                     </label>
                     <div className="flex gap-2">
-                        <button 
+                        <button
                             onClick={handleDownloadPDF}
-                            disabled={!topic || isLoading}
+                            disabled={!topic || isLoading || isExportingPdf}
                             className="text-[10px] flex items-center bg-gray-800 hover:bg-gray-700 border border-white/10 text-gray-300 px-3 py-1 rounded-full transition-colors disabled:opacity-30 disabled:cursor-not-allowed"
                             title="Baixar Briefing em PDF"
                         >
@@ -546,40 +567,31 @@ const ScriptGenerator: React.FC<ScriptGeneratorProps> = ({
                             value={referenceUrl}
                             onChange={(e) => {
                                 setReferenceUrl(e.target.value);
-                                setUrlValid(false);
                                 setStyleAnalysis('');
                             }}
                             placeholder="Cole uma URL do TikTok, Reels ou YouTube Shorts..."
                             className="w-full pl-10 pr-4 py-3 glass-input rounded-xl text-sm text-gray-300 focus:text-white transition-all border-transparent focus:border-fuchsia-500/50"
+                            disabled={isLoading}
                         />
                     </div>
-                    <button 
-                        onClick={handleCheckUrl}
-                        disabled={!referenceUrl || isCheckingUrl || urlValid}
-                        className={`px-6 py-3 rounded-xl font-bold text-xs uppercase tracking-wider transition-all duration-300 flex items-center justify-center min-w-[140px]
-                            ${urlValid 
-                                ? 'bg-green-500/20 text-green-400 border border-green-500/50 cursor-default' 
-                                : 'bg-fuchsia-600 hover:bg-fuchsia-500 text-white shadow-lg hover:shadow-fuchsia-500/30'
-                            } disabled:opacity-50 disabled:cursor-not-allowed`}
+                    <button
+                        onClick={onAnalyzeStyle}
+                        disabled={!referenceUrl.trim() || isAnalyzingStyle || isLoading}
+                        className="px-6 py-3 rounded-xl font-bold text-xs uppercase tracking-wider transition-all duration-300 flex items-center justify-center min-w-[140px] bg-fuchsia-600 hover:bg-fuchsia-500 text-white shadow-lg hover:shadow-fuchsia-500/30 disabled:opacity-50 disabled:cursor-not-allowed"
                     >
-                        {isCheckingUrl ? (
-                            <Loader />
-                        ) : urlValid ? (
-                            <>CONFIRMADO ✓</>
-                        ) : (
-                            "ANALISAR URL"
-                        )}
+                        {isAnalyzingStyle ? <Loader /> : styleAnalysis ? "REANALISAR" : "ANALISAR URL"}
                     </button>
                 </div>
-                {urlValid && (
+                {styleAnalysis && (
                     <div className="mt-4 animate-fade-in-up">
                          <div className="flex justify-between items-center mb-2 ml-1">
-                             <label className="text-[10px] font-bold text-fuchsia-400 uppercase tracking-[0.1em] flex items-center">
+                             <label htmlFor="style-analysis" className="text-[10px] font-bold text-fuchsia-400 uppercase tracking-[0.1em] flex items-center">
                                 <span className="w-1 h-3 bg-fuchsia-500 rounded mr-2"></span>
-                                Análise de Estilo (IA)
+                                Análise de Estilo (IA) — editável, entra no roteiro
                              </label>
                          </div>
-                         <textarea 
+                         <textarea
+                             id="style-analysis"
                              value={styleAnalysis}
                              onChange={(e) => setStyleAnalysis(e.target.value)}
                              className="w-full h-28 p-4 bg-black/30 border border-fuchsia-500/20 rounded-xl text-xs font-mono text-fuchsia-100 focus:border-fuchsia-500/50 focus:outline-none transition-colors leading-relaxed"

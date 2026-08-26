@@ -1,24 +1,44 @@
 
-import React, { useState, useCallback, useEffect, useRef } from 'react';
-import { Script, VideoChunk, VideoStyle, ScriptMode, AspectRatio, SavedProjectState, SocialContentGenerated } from './types';
-import { INITIAL_CREDITS, SCRIPT_GENERATION_COST, VIDEO_CHUNK_GENERATION_COST, MAX_CHUNKS } from './constants';
-import { generateScript, generateVideoForChunk, generateInfluencerPersona, generateCampaignBriefing, generateSocialContent, optimizeVeoPrompt } from './services/geminiService';
+import React, { useState, useCallback, useEffect, useMemo, useRef } from 'react';
+import { Script, ScriptChunk, VideoChunk, VideoStyle, ScriptMode, AspectRatio, SavedProjectState, SocialContentGenerated, ImagePayload } from './types';
+import {
+  INITIAL_CREDITS,
+  SCRIPT_GENERATION_COST,
+  VIDEO_CHUNK_GENERATION_COST,
+  VIDEO_RENDER_CONCURRENCY,
+  TRANSITION_DURATION_MS,
+} from './constants';
+import {
+  generateScript,
+  generateVideoForChunk,
+  generateInfluencerPersona,
+  generateCampaignBriefing,
+  generateSocialContent,
+  optimizeVeoPrompt,
+  analyzeReferenceStyle,
+  humanizeError,
+  hasApiKey,
+} from './services/geminiService';
+import { mergeVideoClips } from './services/videoMerger';
+import { fileToDataUrl, dataUrlToFile, fileToImagePayload, mapWithConcurrency } from './utils/files';
 import Header from './components/Header';
 import ScriptGenerator from './components/ScriptGenerator';
 import ScriptEditor from './components/ScriptEditor';
 import VideoDisplay from './components/VideoDisplay';
 import { Loader } from './components/Loader';
 
-const TRANSITION_DURATION_MS = 1000; // 1 second cross-dissolve
-const TEST_URL = "https://www.tiktok.com/@stylebyassitan/video/7402182344464928032?is_from_webapp=1&sender_device=pc&web_id=7568213656002709008";
 const LOCAL_STORAGE_KEY = 'influencer_labs_project';
+const PROJECT_FORMAT_VERSION = 2;
 
-// Toast Component
-const Toast: React.FC<{ message: string; type: 'success' | 'error' | 'info'; onClose: () => void }> = ({ message, type, onClose }) => {
+type ToastState = { message: string; type: 'success' | 'error' | 'info' };
+
+const Toast: React.FC<{ toast: ToastState; onClose: () => void }> = ({ toast, onClose }) => {
+    // Keyed on the message so a re-render of the parent does not restart the
+    // countdown; a genuinely new toast gets a fresh timer.
     useEffect(() => {
-        const timer = setTimeout(onClose, 3000);
+        const timer = setTimeout(onClose, 4000);
         return () => clearTimeout(timer);
-    }, [onClose]);
+    }, [toast, onClose]);
 
     const bgColors = {
         success: 'bg-green-500/20 border-green-500 text-green-400',
@@ -27,14 +47,13 @@ const Toast: React.FC<{ message: string; type: 'success' | 'error' | 'info'; onC
     };
 
     return (
-        <div className={`fixed top-24 right-8 z-[100] px-6 py-4 rounded-xl border backdrop-blur-md shadow-2xl flex items-center animate-fade-in-up ${bgColors[type]}`}>
-            <span className="font-bold mr-2">{type === 'success' ? '✓' : type === 'error' ? '⚠' : 'ℹ'}</span>
-            {message}
+        <div className={`fixed top-24 right-8 z-[100] px-6 py-4 rounded-xl border backdrop-blur-md shadow-2xl flex items-center animate-fade-in-up ${bgColors[toast.type]}`} role="status">
+            <span className="font-bold mr-2">{toast.type === 'success' ? '✓' : toast.type === 'error' ? '⚠' : 'ℹ'}</span>
+            {toast.message}
         </div>
     );
 };
 
-// Simple Canvas Confetti Component
 const Confetti: React.FC<{ trigger: boolean }> = ({ trigger }) => {
     const canvasRef = useRef<HTMLCanvasElement>(null);
 
@@ -47,52 +66,51 @@ const Confetti: React.FC<{ trigger: boolean }> = ({ trigger }) => {
         canvas.width = window.innerWidth;
         canvas.height = window.innerHeight;
 
-        const particles: any[] = [];
         const colors = ['#06b6d4', '#7c3aed', '#ffffff', '#facc15'];
+        const particles = Array.from({ length: 100 }, () => ({
+            x: canvas.width / 2,
+            y: canvas.height / 2,
+            vx: (Math.random() - 0.5) * 20,
+            vy: (Math.random() - 0.5) * 20,
+            size: Math.random() * 5 + 2,
+            color: colors[Math.floor(Math.random() * colors.length)],
+            life: 100,
+        }));
 
-        for (let i = 0; i < 100; i++) {
-            particles.push({
-                x: canvas.width / 2,
-                y: canvas.height / 2,
-                vx: (Math.random() - 0.5) * 20,
-                vy: (Math.random() - 0.5) * 20,
-                size: Math.random() * 5 + 2,
-                color: colors[Math.floor(Math.random() * colors.length)],
-                life: 100
-            });
-        }
-
+        let frame = 0;
         const animate = () => {
-            if (!ctx) return;
             ctx.clearRect(0, 0, canvas.width, canvas.height);
             let active = false;
-            particles.forEach(p => {
-                if (p.life > 0) {
-                    active = true;
-                    p.x += p.vx;
-                    p.y += p.vy;
-                    p.vy += 0.2; // gravity
-                    p.life--;
-                    ctx.globalAlpha = p.life / 100;
-                    ctx.fillStyle = p.color;
-                    ctx.beginPath();
-                    ctx.arc(p.x, p.y, p.size, 0, Math.PI * 2);
-                    ctx.fill();
-                }
-            });
-            if (active) requestAnimationFrame(animate);
-            else ctx.clearRect(0, 0, canvas.width, canvas.height);
+            for (const p of particles) {
+                if (p.life <= 0) continue;
+                active = true;
+                p.x += p.vx;
+                p.y += p.vy;
+                p.vy += 0.2; // gravity
+                p.life--;
+                ctx.globalAlpha = p.life / 100;
+                ctx.fillStyle = p.color;
+                ctx.beginPath();
+                ctx.arc(p.x, p.y, p.size, 0, Math.PI * 2);
+                ctx.fill();
+            }
+            if (active) {
+                frame = requestAnimationFrame(animate);
+            } else {
+                ctx.clearRect(0, 0, canvas.width, canvas.height);
+            }
         };
-        animate();
+        frame = requestAnimationFrame(animate);
 
+        return () => cancelAnimationFrame(frame);
     }, [trigger]);
 
-    return <canvas ref={canvasRef} className="fixed inset-0 pointer-events-none z-[100]" />;
+    return <canvas ref={canvasRef} className="fixed inset-0 pointer-events-none z-[100]" aria-hidden="true" />;
 };
 
 function App() {
   const [credits, setCredits] = useState<number>(INITIAL_CREDITS);
-  
+
   // Influencer State
   const [influencerImageFile, setInfluencerImageFile] = useState<File | null>(null);
   const [characterDescription, setCharacterDescription] = useState<string | null>(null);
@@ -103,7 +121,9 @@ function App() {
   const [productImageFile, setProductImageFile] = useState<File | null>(null);
   const [logoImageFile, setLogoImageFile] = useState<File | null>(null);
   const [isGeneratingBriefing, setIsGeneratingBriefing] = useState(false);
-  const [referenceUrl, setReferenceUrl] = useState<string>(TEST_URL);
+  const [referenceUrl, setReferenceUrl] = useState<string>('');
+  const [styleAnalysis, setStyleAnalysis] = useState<string>('');
+  const [isAnalyzingStyle, setIsAnalyzingStyle] = useState(false);
 
   // Script & Video State
   const [script, setScript] = useState<Script | null>(null);
@@ -111,24 +131,69 @@ function App() {
   const [isLoadingScript, setIsLoadingScript] = useState<boolean>(false);
   const [isGeneratingVideo, setIsGeneratingVideo] = useState<boolean>(false);
   const [isMerging, setIsMerging] = useState<boolean>(false);
+  const [mergeStage, setMergeStage] = useState<string>('');
   const [mergedVideoUrl, setMergedVideoUrl] = useState<string | null>(null);
-  
+  const [mergedVideoExtension, setMergedVideoExtension] = useState<string>('webm');
+
   const [error, setError] = useState<string | null>(null);
   const [videoStyle, setVideoStyle] = useState<VideoStyle>('cinematic');
   const [scriptMode, setScriptMode] = useState<ScriptMode>('balanced');
   const [aspectRatio, setAspectRatio] = useState<AspectRatio>('16:9');
+  const [useCharacterReference, setUseCharacterReference] = useState<boolean>(true);
   const [apiKeySelected, setApiKeySelected] = useState<boolean>(false);
   const [checkingApiKey, setCheckingApiKey] = useState<boolean>(true);
   const [showConfetti, setShowConfetti] = useState(false);
   const [socialContent, setSocialContent] = useState<SocialContentGenerated | null>(null);
 
-  const [toast, setToast] = useState<{ message: string; type: 'success' | 'error' | 'info' } | null>(null);
+  const [toast, setToast] = useState<ToastState | null>(null);
   const [canLoadProject, setCanLoadProject] = useState(false);
+
+  const dismissToast = useCallback(() => setToast(null), []);
+
+  // Every blob URL handed to a <video> or <a download> is tracked here so it can
+  // be released; without this the tab holds on to every clip ever rendered.
+  const objectUrlsRef = useRef<Set<string>>(new Set());
+
+  const trackObjectUrl = useCallback((url: string) => {
+    objectUrlsRef.current.add(url);
+    return url;
+  }, []);
+
+  const releaseAllObjectUrls = useCallback(() => {
+    for (const url of objectUrlsRef.current) {
+      URL.revokeObjectURL(url);
+    }
+    objectUrlsRef.current.clear();
+  }, []);
+
+  // Revoke any tracked URL that state no longer references. Doing it here rather
+  // than inside the handlers keeps the state updaters free of side effects,
+  // which matters under StrictMode's double invocation.
+  useEffect(() => {
+    const live = new Set<string>();
+    for (const video of videos) {
+      if (video.videoUrl) live.add(video.videoUrl);
+    }
+    if (mergedVideoUrl) live.add(mergedVideoUrl);
+
+    for (const url of [...objectUrlsRef.current]) {
+      if (!live.has(url)) {
+        URL.revokeObjectURL(url);
+        objectUrlsRef.current.delete(url);
+      }
+    }
+  }, [videos, mergedVideoUrl]);
+
+  useEffect(() => releaseAllObjectUrls, [releaseAllObjectUrls]);
 
   useEffect(() => {
     const checkApiKey = async () => {
         try {
-            if (window.aistudio && await window.aistudio.hasSelectedApiKey()) {
+            // A build-time key (GEMINI_API_KEY in .env) is enough on its own; the
+            // AI Studio picker is only consulted when running inside AI Studio.
+            if (hasApiKey()) {
+                setApiKeySelected(true);
+            } else if (window.aistudio && await window.aistudio.hasSelectedApiKey()) {
                 setApiKeySelected(true);
             }
         } catch (e) {
@@ -137,60 +202,54 @@ function App() {
             setCheckingApiKey(false);
         }
     };
-    checkApiKey();
-    
-    // Check for saved project
-    const saved = localStorage.getItem(LOCAL_STORAGE_KEY);
-    if (saved) setCanLoadProject(true);
+    void checkApiKey();
+
+    try {
+        if (localStorage.getItem(LOCAL_STORAGE_KEY)) setCanLoadProject(true);
+    } catch (e) {
+        // Private browsing modes can throw on localStorage access.
+        console.warn("localStorage indisponível:", e);
+    }
   }, []);
 
   const handleSelectApiKey = async () => {
+    if (!window.aistudio) {
+      setError(
+        "Seletor de chave indisponível fora do AI Studio. Crie um arquivo .env na raiz do projeto com GEMINI_API_KEY=sua_chave e reinicie o servidor."
+      );
+      return;
+    }
     try {
-      if (window.aistudio) {
-          await window.aistudio.openSelectKey();
-          setApiKeySelected(true);
-          setError(null);
-      }
+      await window.aistudio.openSelectKey();
+      setApiKeySelected(true);
+      setError(null);
     } catch (e) {
       console.error("Error opening API key selection:", e);
       setError("Não foi possível abrir o seletor de chave de API.");
     }
   };
 
-  const fileToBase64 = (file: File): Promise<string> =>
-    new Promise((resolve, reject) => {
-        const reader = new FileReader();
-        reader.readAsDataURL(file);
-        reader.onload = () => {
-            const result = reader.result as string;
-            resolve(result); // Keep full data URL for saving
-        };
-        reader.onerror = reject;
-    });
-  
-  const base64ToFile = async (dataUrl: string, filename: string): Promise<File> => {
-      const res = await fetch(dataUrl);
-      const buf = await res.arrayBuffer();
-      const type = dataUrl.split(';')[0].split(':')[1];
-      return new File([buf], filename, { type });
-  };
-
   const handleSaveProject = async () => {
       try {
-          const influencerBase64 = influencerImageFile ? await fileToBase64(influencerImageFile) : null;
-          const productBase64 = productImageFile ? await fileToBase64(productImageFile) : null;
-          const logoBase64 = logoImageFile ? await fileToBase64(logoImageFile) : null;
+          const [influencerBase64, productBase64, logoBase64] = await Promise.all([
+              influencerImageFile ? fileToDataUrl(influencerImageFile) : Promise.resolve(null),
+              productImageFile ? fileToDataUrl(productImageFile) : Promise.resolve(null),
+              logoImageFile ? fileToDataUrl(logoImageFile) : Promise.resolve(null),
+          ]);
 
           const projectState: SavedProjectState = {
+              version: PROJECT_FORMAT_VERSION,
               timestamp: Date.now(),
               topic,
               characterDescription,
               script,
               credits,
               referenceUrl,
+              styleAnalysis,
               videoStyle,
               scriptMode,
               aspectRatio,
+              useCharacterReference,
               socialContent,
               influencerImageBase64: influencerBase64,
               productImageBase64: productBase64,
@@ -202,11 +261,14 @@ function App() {
           setToast({ message: "Projeto salvo com sucesso!", type: "success" });
       } catch (e: any) {
           console.error("Erro ao salvar projeto:", e);
-          if (e.name === 'QuotaExceededError') {
-              setToast({ message: "Erro: Imagens muito grandes para salvar no navegador.", type: "error" });
-          } else {
-              setToast({ message: "Falha ao salvar o projeto.", type: "error" });
-          }
+          // Browsers report the quota overflow under a couple of different names.
+          const isQuota = e?.name === 'QuotaExceededError' || e?.name === 'NS_ERROR_DOM_QUOTA_REACHED' || e?.code === 22;
+          setToast({
+              message: isQuota
+                  ? "Imagens muito grandes para salvar no navegador. Use arquivos menores."
+                  : "Falha ao salvar o projeto.",
+              type: "error",
+          });
       }
   };
 
@@ -217,100 +279,89 @@ function App() {
 
           const data: SavedProjectState = JSON.parse(saved);
 
-          setTopic(data.topic);
-          setCharacterDescription(data.characterDescription);
-          setCredits(data.credits);
-          setReferenceUrl(data.referenceUrl);
-          setVideoStyle(data.videoStyle);
-          setScriptMode(data.scriptMode);
-          setAspectRatio(data.aspectRatio);
-          setSocialContent(data.socialContent);
+          // Rendered clips live in memory only, so a load always starts from a
+          // clean slate rather than pointing at blob URLs from another project.
+          setMergedVideoUrl(null);
 
-          // Restore Files
-          if (data.influencerImageBase64) {
-              const file = await base64ToFile(data.influencerImageBase64, "influencer_restored.png");
-              setInfluencerImageFile(file);
-          }
-          if (data.productImageBase64) {
-              const file = await base64ToFile(data.productImageBase64, "product_restored.png");
-              setProductImageFile(file);
-          }
-          if (data.logoImageBase64) {
-              const file = await base64ToFile(data.logoImageBase64, "logo_restored.png");
-              setLogoImageFile(file);
-          }
+          setTopic(data.topic ?? '');
+          setCharacterDescription(data.characterDescription ?? null);
+          setCredits(typeof data.credits === 'number' ? data.credits : INITIAL_CREDITS);
+          setReferenceUrl(data.referenceUrl ?? '');
+          setStyleAnalysis(data.styleAnalysis ?? '');
+          setVideoStyle(data.videoStyle ?? 'cinematic');
+          setScriptMode(data.scriptMode ?? 'balanced');
+          setAspectRatio(data.aspectRatio ?? '16:9');
+          setUseCharacterReference(data.useCharacterReference ?? true);
+          setSocialContent(data.socialContent ?? null);
 
-          // Restore Script & Reset Videos
-          if (data.script) {
+          setInfluencerImageFile(data.influencerImageBase64 ? dataUrlToFile(data.influencerImageBase64, "influencer_restored.png") : null);
+          setProductImageFile(data.productImageBase64 ? dataUrlToFile(data.productImageBase64, "product_restored.png") : null);
+          setLogoImageFile(data.logoImageBase64 ? dataUrlToFile(data.logoImageBase64, "logo_restored.png") : null);
+
+          if (data.script?.length) {
               setScript(data.script);
-              // We cannot restore generated video BLOBS from localStorage (too big)
-              // So we restore the slots but reset status to pending if they were done
-              const restoredVideos = data.script.map(chunk => ({
+              setVideos(data.script.map(chunk => ({
                   id: chunk.id,
                   scriptChunk: chunk,
-                  videoUrl: null, // Cannot persist blobs
+                  videoUrl: null,
                   status: 'pending' as const,
-                  optimizedPrompt: undefined
-              }));
-              setVideos(restoredVideos);
-              if (data.script.length > 0) {
-                  setToast({ message: "Projeto carregado! Os vídeos precisam ser renderizados novamente.", type: "info" });
-              } else {
-                  setToast({ message: "Projeto carregado com sucesso!", type: "success" });
-              }
+              })));
+              setToast({ message: "Projeto carregado! Os vídeos precisam ser renderizados novamente.", type: "info" });
           } else {
+              setScript(null);
+              setVideos([]);
               setToast({ message: "Projeto carregado com sucesso!", type: "success" });
           }
-
       } catch (e) {
           console.error("Erro ao carregar projeto:", e);
           setToast({ message: "Arquivo de projeto corrompido ou inválido.", type: "error" });
       }
   };
 
-  // Step 1: Analyze Influencer
+  // Step 1: Casting agent
   const handleAnalyzeInfluencer = async (file: File) => {
       setIsAnalyzingInfluencer(true);
       setError(null);
       try {
-          const base64Full = await fileToBase64(file);
-          const base64Data = base64Full.split(',')[1];
-          const description = await generateInfluencerPersona({ data: base64Data, mimeType: file.type });
-          setCharacterDescription(description);
+          const payload = await fileToImagePayload(file);
+          setCharacterDescription(await generateInfluencerPersona(payload));
       } catch (e) {
-          setError("Erro ao analisar a imagem da influencer.");
           console.error(e);
+          setError(`Erro ao analisar a imagem da influencer. ${humanizeError(e)}`);
       } finally {
           setIsAnalyzingInfluencer(false);
       }
   };
 
-  // Step 2: Auto-Generate Briefing
+  // Step 2: Strategist agent
   const handleAutoGenerateBriefing = async () => {
       if (!productImageFile) return;
       setIsGeneratingBriefing(true);
       setError(null);
       try {
-          const productBase64Full = await fileToBase64(productImageFile);
-          const productBase64Data = productBase64Full.split(',')[1];
-          let logoData = null;
-          
-          if (logoImageFile) {
-              const logoBase64Full = await fileToBase64(logoImageFile);
-              const logoBase64Data = logoBase64Full.split(',')[1];
-              logoData = { data: logoBase64Data, mimeType: logoImageFile.type };
-          }
-          
-          const briefing = await generateCampaignBriefing(
-              { data: productBase64Data, mimeType: productImageFile.type },
-              logoData
-          );
-          setTopic(briefing);
+          const productPayload = await fileToImagePayload(productImageFile);
+          const logoPayload = logoImageFile ? await fileToImagePayload(logoImageFile) : null;
+          setTopic(await generateCampaignBriefing(productPayload, logoPayload));
       } catch (e) {
-           setError("Erro ao gerar o briefing da campanha.");
-           console.error(e);
+          console.error(e);
+          setError(`Erro ao gerar o briefing da campanha. ${humanizeError(e)}`);
       } finally {
           setIsGeneratingBriefing(false);
+      }
+  };
+
+  // Step 3: Director agent
+  const handleAnalyzeStyle = async () => {
+      if (!referenceUrl.trim()) return;
+      setIsAnalyzingStyle(true);
+      setError(null);
+      try {
+          setStyleAnalysis(await analyzeReferenceStyle(referenceUrl.trim()));
+      } catch (e) {
+          console.error(e);
+          setError(`Erro ao analisar a referência de estilo. ${humanizeError(e)}`);
+      } finally {
+          setIsAnalyzingStyle(false);
       }
   };
 
@@ -336,342 +387,186 @@ function App() {
     setSocialContent(null);
 
     try {
-      const productBase64Full = await fileToBase64(productImageFile);
-      const productImageData = {
-        data: productBase64Full.split(',')[1],
-        mimeType: productImageFile.type,
-      };
-      
-      let logoImageData: { data: string; mimeType: string } | null = null;
-      if (logoImageFile) {
-        const logoBase64Full = await fileToBase64(logoImageFile);
-        logoImageData = {
-          data: logoBase64Full.split(',')[1],
-          mimeType: logoImageFile.type,
-        };
-      }
+      const productImageData = await fileToImagePayload(productImageFile);
+      const logoImageData = logoImageFile ? await fileToImagePayload(logoImageFile) : null;
 
-      // 1. Run ScriptWriter Agent
+      // 1. ScriptWriter agent
       const generatedScriptChunks = await generateScript(
-        topic, 
-        productImageData, 
-        logoImageData, 
-        scriptMode, 
+        topic,
+        productImageData,
+        logoImageData,
+        scriptMode,
         characterDescription,
-        referenceUrl
+        referenceUrl.trim() || null,
+        styleAnalysis.trim() || null
       );
       setScript(generatedScriptChunks);
       setCredits(prev => prev - SCRIPT_GENERATION_COST);
-      
-      const initialVideos = generatedScriptChunks.map(chunk => ({
+
+      setVideos(generatedScriptChunks.map(chunk => ({
         id: chunk.id,
         scriptChunk: chunk,
         videoUrl: null,
         status: 'pending' as const,
-      }));
-      setVideos(initialVideos);
+      })));
 
-      // 2. Run Social Publisher Agent (Background)
-      generateSocialContent(topic, generatedScriptChunks, referenceUrl)
-          .then(content => setSocialContent(content))
-          .catch(err => console.error("Social Agent Error:", err));
+      // 2. Social agent, in the background — a failure here must not block the
+      // main pipeline, so it only surfaces as a toast.
+      generateSocialContent(topic, generatedScriptChunks, referenceUrl.trim() || null)
+          .then(setSocialContent)
+          .catch(err => {
+              console.error("Social Agent Error:", err);
+              setToast({ message: "Não foi possível gerar o conteúdo para redes sociais.", type: "info" });
+          });
 
     } catch (e) {
-      const errorMessage = e instanceof Error ? e.message : "Ocorreu um erro desconhecido.";
-      if (errorMessage.includes("Requested entity was not found")) {
-        setError("Chave de API inválida ou modelo não encontrado. Por favor, verifique sua chave.");
+      console.error(e);
+      const message = humanizeError(e);
+      setError(message);
+      if (/Modelo não encontrado|Chave de API inválida/.test(message)) {
         setApiKeySelected(false);
-      } else {
-        setError(errorMessage);
       }
     } finally {
       setIsLoadingScript(false);
     }
-  }, [topic, credits, scriptMode, productImageFile, logoImageFile, characterDescription, referenceUrl]);
+  }, [topic, credits, scriptMode, productImageFile, logoImageFile, characterDescription, referenceUrl, styleAnalysis]);
 
-  const handleScriptChange = (index: number, field: 'scene' | 'narration', value: string) => {
+  const handleScriptChange = useCallback((index: number, field: 'scene' | 'narration', value: string) => {
     if (!script) return;
+    const edited = { ...script[index], [field]: value };
     const updatedScript = [...script];
-    updatedScript[index] = { ...updatedScript[index], [field]: value };
+    updatedScript[index] = edited;
     setScript(updatedScript);
-    
-    setVideos(prevVideos => {
-        const updatedVideos = [...prevVideos];
-        const videoIndex = updatedVideos.findIndex(v => v.scriptChunk.id === updatedScript[index].id);
-        if(videoIndex !== -1) {
-            updatedVideos[videoIndex].scriptChunk = updatedScript[index];
-        }
-        return updatedVideos;
-    });
-  };
 
-  const handleGenerateVideos = useCallback(async () => {
-    if (!script || !characterDescription) return;
+    // Keep the render queue in sync so a re-render picks up the edited text.
+    setVideos(prev => prev.map(v => (v.scriptChunk.id === edited.id ? { ...v, scriptChunk: edited } : v)));
+  }, [script]);
 
-    const totalCost = script.length * VIDEO_CHUNK_GENERATION_COST;
+  /**
+   * Renders the given scenes. Credits are charged upfront (so the confirmation
+   * dialog can quote an exact price) and refunded per scene that fails.
+   */
+  const renderScenes = useCallback(async (chunks: ScriptChunk[]) => {
+    if (!characterDescription || chunks.length === 0) return;
+
+    const totalCost = chunks.length * VIDEO_CHUNK_GENERATION_COST;
     if (credits < totalCost) {
-      setError(`Créditos insuficientes. Você precisa de ${totalCost} créditos para gerar os vídeos de todas as cenas.`);
+      setError(`Créditos insuficientes. Você precisa de ${totalCost} créditos para renderizar ${chunks.length} cena(s).`);
       return;
     }
 
     setIsGeneratingVideo(true);
     setError(null);
-    setMergedVideoUrl(null);
     setCredits(prev => prev - totalCost);
 
-    setVideos(prev => prev.map(v => ({ ...v, status: 'generating' })));
+    // Re-rendering a scene replaces its clip, so the previous cut is stale. The
+    // dropped blob URLs are revoked by the garbage-collection effect above.
+    setMergedVideoUrl(null);
 
-    let firstErrorMessage: string | null = null;
+    const targetIds = new Set(chunks.map(c => c.id));
+    setVideos(prev => prev.map(v => (
+      targetIds.has(v.id)
+        ? { ...v, status: 'generating' as const, videoUrl: null, errorMessage: undefined, progressMessage: 'Na fila' }
+        : v
+    )));
 
-    const promises = script.map(async (chunk) => {
+    const characterImage: ImagePayload | null =
+      useCharacterReference && influencerImageFile ? await fileToImagePayload(influencerImageFile).catch(() => null) : null;
+
+    let refunded = 0;
+    const failures: string[] = [];
+
+    // Veo's per-minute quota cannot absorb every scene at once; render in a
+    // small window so a six-scene campaign does not trip rate limits.
+    await mapWithConcurrency(chunks, VIDEO_RENDER_CONCURRENCY, async (chunk) => {
+      const setProgress = (progressMessage: string) =>
+        setVideos(prev => prev.map(v => (v.id === chunk.id ? { ...v, progressMessage } : v)));
+
       try {
-          // 1. Agent: Video Director (Optimize Prompt)
-          const optimizedPrompt = await optimizeVeoPrompt(chunk.scene, videoStyle, characterDescription);
-          
-          setVideos(prev => prev.map(v => v.id === chunk.id ? { ...v, optimizedPrompt } : v));
+          setProgress('Escrevendo prompt de direção');
+          const optimizedPrompt = await optimizeVeoPrompt(chunk, videoStyle, characterDescription);
+          setVideos(prev => prev.map(v => (v.id === chunk.id ? { ...v, optimizedPrompt } : v)));
 
-          // 2. Agent: Renderer (Veo)
-          const videoUrl = await generateVideoForChunk(chunk, videoStyle, aspectRatio, characterDescription, optimizedPrompt);
-          
-          setVideos(prev => prev.map(v => v.id === chunk.id ? { ...v, status: 'done', videoUrl } : v));
+          const videoUrl = await generateVideoForChunk(chunk, {
+            style: videoStyle,
+            aspectRatio,
+            characterDescription,
+            optimizedPrompt,
+            characterImage,
+            onProgress: setProgress,
+          });
+
+          trackObjectUrl(videoUrl);
+          setVideos(prev => prev.map(v => (v.id === chunk.id ? { ...v, status: 'done', videoUrl, progressMessage: undefined } : v)));
       } catch (error) {
           console.error(`Failed to generate video for chunk ${chunk.id}`, error);
-          if (!firstErrorMessage && error instanceof Error) {
-            firstErrorMessage = error.message;
-          }
-          setVideos(prev => prev.map(v => v.id === chunk.id ? { ...v, status: 'error' } : v));
+          const message = humanizeError(error);
+          failures.push(message);
+          refunded += VIDEO_CHUNK_GENERATION_COST;
+          setVideos(prev => prev.map(v => (v.id === chunk.id ? { ...v, status: 'error', errorMessage: message, progressMessage: undefined } : v)));
       }
     });
 
-    await Promise.all(promises);
-
-    setIsGeneratingVideo(false);
-    
-    if (firstErrorMessage) {
-      // Enhance error message for Veo requirements
-      if (firstErrorMessage.includes("Requested entity was not found")) {
-          setError("O modelo Veo requer um projeto com faturamento habilitado (Paid Tier). Por favor, selecione uma chave de API de um projeto com billing ativo.");
-          setApiKeySelected(false);
-          return;
-      }
-      setError(firstErrorMessage);
+    if (refunded > 0) {
+      setCredits(prev => prev + refunded);
     }
 
-  }, [script, credits, videoStyle, aspectRatio, characterDescription]);
+    setIsGeneratingVideo(false);
 
-  // Refactored handleMergeVideos to support Smooth Transitions (Cross-Dissolve)
+    if (failures.length > 0) {
+      const [first] = failures;
+      setError(
+        failures.length === 1
+          ? `Uma cena falhou: ${first} Os créditos dela foram devolvidos.`
+          : `${failures.length} cenas falharam (${first}) Os créditos delas foram devolvidos.`
+      );
+      if (/Modelo não encontrado|Chave de API inválida/.test(first)) {
+        setApiKeySelected(false);
+      }
+    }
+  }, [credits, characterDescription, videoStyle, aspectRatio, useCharacterReference, influencerImageFile, trackObjectUrl]);
+
+  const handleGenerateVideos = useCallback(() => {
+    if (script) void renderScenes(script);
+  }, [script, renderScenes]);
+
+  const handleRetryFailed = useCallback(() => {
+    const failed = videos.filter(v => v.status === 'error').map(v => v.scriptChunk);
+    if (failed.length > 0) void renderScenes(failed);
+  }, [videos, renderScenes]);
+
   const handleMergeVideos = useCallback(async () => {
-    const generatedVideos = videos.filter(v => v.status === 'done' && v.videoUrl);
-    if (generatedVideos.length !== videos.length || generatedVideos.length === 0) return;
+    const clipUrls = videos.map(v => v.videoUrl).filter((url): url is string => Boolean(url));
+    if (clipUrls.length === 0 || clipUrls.length !== videos.length) return;
 
     setIsMerging(true);
+    setMergeStage('');
     setError(null);
-    
-    let audioContext: AudioContext | null = null;
 
     try {
-        const videoUrls = generatedVideos.map(v => v.videoUrl!);
-        
-        // Setup Audio Context
-        audioContext = new (window.AudioContext || (window as any).webkitAudioContext)();
-        await audioContext.resume(); // Important for newer browsers
-
-        const audioDestination = audioContext.createMediaStreamDestination();
-        
-        // Setup Canvas
-        const canvas = document.createElement('canvas');
-        const ctx = canvas.getContext('2d');
-        
-        if (!ctx) throw new Error("Não foi possível obter o contexto do canvas");
-
-        // Initialize Canvas size based on the first video
-        const tempVideo = document.createElement('video');
-        tempVideo.crossOrigin = "anonymous";
-        tempVideo.src = videoUrls[0];
-        await new Promise((resolve) => {
-            tempVideo.onloadedmetadata = () => {
-                canvas.width = tempVideo.videoWidth;
-                canvas.height = tempVideo.videoHeight;
-                resolve(null);
-            };
+        const { blob, mimeType } = await mergeVideoClips(clipUrls, {
+            transitionMs: TRANSITION_DURATION_MS,
+            onProgress: setMergeStage,
         });
 
-        // Capture Canvas Stream
-        const canvasStream = canvas.captureStream(30);
-        const combinedStream = new MediaStream([
-            ...canvasStream.getVideoTracks(),
-            ...audioDestination.stream.getAudioTracks()
-        ]);
-
-        const recorder = new MediaRecorder(combinedStream, { mimeType: 'video/webm; codecs=vp9,opus' });
-        const recordedChunks: Blob[] = [];
-
-        recorder.ondataavailable = (e) => {
-            if (e.data.size > 0) recordedChunks.push(e.data);
-        };
-
-        recorder.onstop = () => {
-            const blob = new Blob(recordedChunks, { type: 'video/webm' });
-            const url = URL.createObjectURL(blob);
-            setMergedVideoUrl(url);
-            setIsMerging(false);
-            setShowConfetti(true);
-            setTimeout(() => setShowConfetti(false), 5000);
-            audioContext?.close();
-        };
-
-        recorder.start();
-
-        // --- Transition Logic System ---
-        
-        // We need two video elements to ping-pong between for cross-fading
-        const videoA = document.createElement('video');
-        const videoB = document.createElement('video');
-        
-        [videoA, videoB].forEach(v => {
-            // CRITICAL FIX: Muted must be FALSE for createMediaElementSource to capture audio
-            // We don't hear it because we don't connect it to audioContext.destination (speakers)
-            v.muted = false; 
-            v.volume = 1.0;
-            v.crossOrigin = "anonymous"; // Required for canvas tainting security
-            v.playsInline = true;
-        });
-
-        // Setup audio graph nodes for both
-        const gainNodeA = audioContext.createGain();
-        const gainNodeB = audioContext.createGain();
-        
-        const sourceNodeA = audioContext.createMediaElementSource(videoA);
-        const sourceNodeB = audioContext.createMediaElementSource(videoB);
-        
-        // Connect sources to gains, and gains to the RECORDER (not speakers)
-        sourceNodeA.connect(gainNodeA).connect(audioDestination);
-        sourceNodeB.connect(gainNodeB).connect(audioDestination);
-
-        // Helper to prepare a video element
-        const loadVideo = async (videoEl: HTMLVideoElement, url: string) => {
-            videoEl.src = url;
-            await new Promise<void>((resolve, reject) => {
-                videoEl.oncanplay = () => resolve();
-                videoEl.onerror = reject;
-            });
-        };
-
-        // Sequence State
-        let currentIndex = 0;
-        let activeVideo = videoA;
-        let incomingVideo = videoB;
-        let activeGain = gainNodeA;
-        let incomingGain = gainNodeB;
-        
-        // Initial Setup
-        await loadVideo(activeVideo, videoUrls[0]);
-        
-        // Start playback
-        activeGain.gain.setValueAtTime(1, audioContext.currentTime);
-        incomingGain.gain.setValueAtTime(0, audioContext.currentTime);
-        
-        await activeVideo.play();
-
-        // Render Loop
-        const render = async () => {
-            if (!ctx || !activeVideo) return;
-
-            // 1. Draw the active video (Base layer)
-            ctx.globalAlpha = 1;
-            ctx.drawImage(activeVideo, 0, 0, canvas.width, canvas.height);
-
-            // 2. Check for Transition Trigger
-            const timeLeft = activeVideo.duration - activeVideo.currentTime;
-            const transitionTimeSec = TRANSITION_DURATION_MS / 1000;
-            const hasNextVideo = currentIndex + 1 < videoUrls.length;
-            const isTransitioning = !incomingVideo.paused;
-
-            // Trigger Transition
-            if (timeLeft <= transitionTimeSec && hasNextVideo && incomingVideo.paused && !incomingVideo.ended) {
-                // Load and play next video
-                try {
-                    await loadVideo(incomingVideo, videoUrls[currentIndex + 1]);
-                    
-                    // Audio Crossfade
-                    const now = audioContext!.currentTime;
-                    // Cancel any scheduled changes to avoid conflicts
-                    activeGain.gain.cancelScheduledValues(now);
-                    incomingGain.gain.cancelScheduledValues(now);
-                    
-                    // Start fade out/in
-                    activeGain.gain.setValueAtTime(1, now);
-                    activeGain.gain.linearRampToValueAtTime(0, now + transitionTimeSec);
-                    
-                    incomingGain.gain.setValueAtTime(0, now);
-                    incomingGain.gain.linearRampToValueAtTime(1, now + transitionTimeSec);
-                    
-                    await incomingVideo.play();
-                } catch (err) {
-                    console.error("Error starting transition", err);
-                }
-            }
-
-            // 3. Handle Transition Visuals (Overlay)
-            if (isTransitioning) {
-                // Calculate alpha based on time progress relative to transition duration
-                const progress = incomingVideo.currentTime / transitionTimeSec;
-                const alpha = Math.max(0, Math.min(progress, 1)); // Clamp between 0 and 1
-                
-                ctx.globalAlpha = alpha;
-                ctx.drawImage(incomingVideo, 0, 0, canvas.width, canvas.height);
-                ctx.globalAlpha = 1; // Reset
-            }
-
-            // 4. Handle Video End / Swap
-            if (activeVideo.ended) {
-                if (hasNextVideo) {
-                    // Swap roles
-                    const tempVideo = activeVideo;
-                    activeVideo = incomingVideo;
-                    incomingVideo = tempVideo; // Old active becomes next incoming
-                    
-                    const tempGain = activeGain;
-                    activeGain = incomingGain;
-                    incomingGain = tempGain;
-
-                    currentIndex++;
-                    
-                    // Pause/Reset the finished video to prepare for next load
-                    incomingVideo.pause();
-                    incomingVideo.currentTime = 0;
-                    
-                    // Ensure audio levels are completely solidified after swap
-                    activeGain.gain.setValueAtTime(1, audioContext!.currentTime);
-                    incomingGain.gain.setValueAtTime(0, audioContext!.currentTime);
-                    
-                    requestAnimationFrame(render);
-                } else {
-                    // Sequence Finished
-                    // Wait a tiny bit to ensure last frame is recorded
-                    setTimeout(() => {
-                         recorder.stop();
-                    }, 100);
-                }
-            } else {
-                requestAnimationFrame(render);
-            }
-        };
-
-        requestAnimationFrame(render);
-
+        setMergedVideoUrl(trackObjectUrl(URL.createObjectURL(blob)));
+        setMergedVideoExtension(mimeType.includes('mp4') ? 'mp4' : 'webm');
+        setShowConfetti(true);
+        setTimeout(() => setShowConfetti(false), 5000);
     } catch (e) {
         console.error(e);
         setError(e instanceof Error ? e.message : "Falha ao unir os vídeos.");
+    } finally {
         setIsMerging(false);
-        audioContext?.close();
+        setMergeStage('');
     }
-  }, [videos]);
-  
+  }, [videos, trackObjectUrl]);
+
+  // Auto-assemble the final cut once every scene has rendered.
   useEffect(() => {
     const allDone = videos.length > 0 && videos.every(v => v.status === 'done');
     if (allDone && !isGeneratingVideo && !mergedVideoUrl && !isMerging) {
-      handleMergeVideos();
+      void handleMergeVideos();
     }
   }, [videos, isGeneratingVideo, mergedVideoUrl, isMerging, handleMergeVideos]);
 
@@ -689,9 +584,15 @@ function App() {
     setIsMerging(false);
     setMergedVideoUrl(null);
     setShowConfetti(false);
-    setReferenceUrl(TEST_URL);
+    setReferenceUrl('');
+    setStyleAnalysis('');
     setSocialContent(null);
   };
+
+  const renderCost = useMemo(
+    () => (script?.length ?? 0) * VIDEO_CHUNK_GENERATION_COST,
+    [script]
+  );
 
   if (checkingApiKey) {
     return (
@@ -715,8 +616,12 @@ function App() {
                         <h1 className="text-5xl font-bold mb-6 bg-clip-text text-transparent bg-gradient-to-r from-cyan-400 to-violet-400">
                             AI Video Studio
                         </h1>
-                        <p className="mb-8 text-gray-300 text-lg leading-relaxed">
-                            Desbloqueie o poder da geração de vídeo Veo. Selecione sua chave de API para acessar o estúdio criativo.
+                        <p className="mb-6 text-gray-300 text-lg leading-relaxed">
+                            Desbloqueie o poder da geração de vídeo Veo. Conecte uma chave de API para acessar o estúdio criativo.
+                        </p>
+                        <p className="mb-8 text-sm text-gray-400">
+                            Rodando fora do AI Studio? Crie um arquivo <code className="text-cyan-400 bg-black/40 px-1.5 py-0.5 rounded">.env</code> com{' '}
+                            <code className="text-cyan-400 bg-black/40 px-1.5 py-0.5 rounded">GEMINI_API_KEY=sua_chave</code> e reinicie o servidor.
                             <br/>
                             <a href="https://ai.google.dev/gemini-api/docs/billing" target="_blank" rel="noopener noreferrer" className="text-cyan-400 hover:text-cyan-300 underline mt-2 inline-block">
                                 Ver detalhes de faturamento
@@ -741,38 +646,35 @@ function App() {
     );
   }
 
-
   return (
     <div className="min-h-screen text-gray-200 relative pb-12">
       <Confetti trigger={showConfetti} />
-      {toast && <Toast message={toast.message} type={toast.type} onClose={() => setToast(null)} />}
+      {toast && <Toast toast={toast} onClose={dismissToast} />}
       <Header credits={credits} onReset={handleReset} onSave={handleSaveProject} onLoad={handleLoadProject} canLoad={canLoadProject} />
       <main className="container mx-auto p-4 md:p-8 relative z-10">
         {error && (
           <div className="animate-fade-in-up bg-red-900/80 border border-red-500/50 text-white px-6 py-4 rounded-xl relative mb-6 backdrop-blur-md shadow-lg" role="alert">
             <div className="flex items-center">
                 <span className="text-2xl mr-3">⚠️</span>
-                <div>
+                <div className="pr-8">
                     <strong className="font-bold block">Erro no Processamento</strong>
                     <span className="block sm:inline text-sm opacity-90">{error}</span>
                 </div>
             </div>
-            <button className="absolute top-4 right-4 text-red-300 hover:text-white" onClick={() => setError(null)}>
-              <svg className="h-5 w-5" role="button" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 20 20" fill="currentColor"><path d="M14.348 14.849a1.2 1.2 0 0 1-1.697 0L10 11.819l-2.651 3.029a1.2 1.2 0 1 1-1.697-1.697l2.758-3.15-2.759-3.152a1.2 1.2 0 1 1 1.697-1.697L10 8.183l2.651-3.031a1.2 1.2 0 1 1 1.697 1.697l-2.758 3.152 2.758 3.15a1.2 1.2 0 0 1 0 1.698z"/></svg>
+            <button className="absolute top-4 right-4 text-red-300 hover:text-white" onClick={() => setError(null)} aria-label="Fechar aviso de erro">
+              <svg className="h-5 w-5" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 20 20" fill="currentColor"><path d="M14.348 14.849a1.2 1.2 0 0 1-1.697 0L10 11.819l-2.651 3.029a1.2 1.2 0 1 1-1.697-1.697l2.758-3.15-2.759-3.152a1.2 1.2 0 1 1 1.697-1.697L10 8.183l2.651-3.031a1.2 1.2 0 1 1 1.697 1.697l-2.758 3.152 2.758 3.15a1.2 1.2 0 0 1 0 1.698z"/></svg>
             </button>
           </div>
         )}
 
         {!script ? (
           <ScriptGenerator
-            // Influencer Props
             influencerImageFile={influencerImageFile}
             setInfluencerImageFile={setInfluencerImageFile}
             onAnalyzeInfluencer={handleAnalyzeInfluencer}
             isAnalyzingInfluencer={isAnalyzingInfluencer}
             characterDescription={characterDescription}
-            
-            // Campaign Props
+
             topic={topic}
             setTopic={setTopic}
             productImageFile={productImageFile}
@@ -781,10 +683,13 @@ function App() {
             setLogoImageFile={setLogoImageFile}
             onGenerateBriefing={handleAutoGenerateBriefing}
             isGeneratingBriefing={isGeneratingBriefing}
-            
-            // Reference URL
+
             referenceUrl={referenceUrl}
             setReferenceUrl={setReferenceUrl}
+            styleAnalysis={styleAnalysis}
+            setStyleAnalysis={setStyleAnalysis}
+            onAnalyzeStyle={handleAnalyzeStyle}
+            isAnalyzingStyle={isAnalyzingStyle}
 
             onGenerate={handleGenerateScript}
             isLoading={isLoadingScript}
@@ -802,14 +707,20 @@ function App() {
             <VideoDisplay
               videos={videos}
               onGenerate={handleGenerateVideos}
+              onRetryFailed={handleRetryFailed}
               isGenerating={isGeneratingVideo}
               isMerging={isMerging}
+              mergeStage={mergeStage}
               mergedVideoUrl={mergedVideoUrl}
-              totalCost={MAX_CHUNKS * VIDEO_CHUNK_GENERATION_COST}
+              mergedVideoExtension={mergedVideoExtension}
+              totalCost={renderCost}
               videoStyle={videoStyle}
               setVideoStyle={setVideoStyle}
               aspectRatio={aspectRatio}
               setAspectRatio={setAspectRatio}
+              useCharacterReference={useCharacterReference}
+              setUseCharacterReference={setUseCharacterReference}
+              hasInfluencerImage={Boolean(influencerImageFile)}
               socialContent={socialContent}
             />
           </div>
