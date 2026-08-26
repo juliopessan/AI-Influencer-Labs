@@ -1,9 +1,88 @@
 # Influencer Labs
 
-Estúdio de IA que transforma uma foto de influencer e uma foto de produto em uma
-campanha UGC completa: persona digital, briefing, roteiro em 6 atos, clipes de
-vídeo gerados pelo Veo, corte final montado no navegador e legendas prontas para
-Instagram, TikTok e YouTube.
+```
+Foto do produto → Persona → Roteiro → Cenas em vídeo → Corte final + legendas
+```
+
+*Uma campanha UGC deixa de depender de agenda de gravação e vira uma sequência de
+chamadas de modelo — você entrega o briefing, o estúdio entrega o vídeo montado.*
+
+---
+
+## 1. O cenário atual
+
+Uma campanha com creator envolve seis etapas e pelo menos três pessoas: alguém
+escreve o briefing, alguém encontra e contrata a influencer, alguém escreve o
+roteiro, grava-se em estúdio ou em casa, edita-se o corte, e por fim alguém
+escreve as legendas para cada rede. Entre o "quero divulgar isso" e o vídeo
+publicável passam-se dias, e cada ajuste de roteiro devolve o processo para a
+etapa de gravação.
+
+```mermaid
+flowchart LR
+    B[Briefing] --> C[Casting] --> R[Roteiro] --> F[Filmagem] --> E[Edição] --> P[Publicação]
+
+    classDef neutro fill:#F2F0EC,stroke:#C9C4BA,color:#3A3733
+    class B,C,R,F,E,P neutro
+```
+
+> O gargalo não é criativo, é logístico: testar uma segunda versão do roteiro
+> custa uma nova diária de gravação.
+
+## 2. O que muda
+
+O pipeline continua o mesmo — as seis etapas permanecem, na mesma ordem. O que
+muda é quem executa as quatro do meio. **O briefing continua seu**, porque é onde
+está o conhecimento do produto, e **a publicação continua sua**, porque quando e
+onde postar é decisão de negócio. Casting, roteiro, filmagem e edição passam a
+ser chamadas de modelo, e por isso deixam de ter custo de agenda.
+
+```mermaid
+flowchart LR
+    B[Briefing] --> C[Casting] --> R[Roteiro] --> F[Filmagem] --> E[Edição] --> P[Publicação]
+
+    classDef neutro fill:#F2F0EC,stroke:#C9C4BA,color:#3A3733
+    classDef delta fill:#FF5800,stroke:#C43E00,color:#FFFFFF
+    class B,P neutro
+    class C,R,F,E delta
+```
+
+Em laranja, o que deixou de precisar de pessoas e câmera. Uma foto define a
+influencer; o roteiro sai em seis atos com a fala já escrita; cada cena vira um
+clipe com áudio; e o corte final é montado no próprio navegador, com transição
+cruzada.
+
+## 3. O resultado
+
+- **Refazer uma cena deixa de ser refazer o dia.** As seis são independentes: a
+  que ficou ruim é regerada sozinha, pagando só por ela.
+- **O custo por campanha cabe num teste.** Cerca de US$ 2,40 na configuração
+  atual — barato o bastante para produzir três versões e escolher uma.
+- **A entrega sai completa.** Vídeo montado mais legenda, hashtags e dica de
+  publicação para Instagram, TikTok e YouTube, no mesmo fluxo.
+- **O briefing vira documento.** A etapa de campanha exporta um PDF executivo
+  para aprovação de cliente antes de qualquer render.
+
+---
+
+## Os números
+
+Custo real de API por campanha de 6 cenas de 8 segundos, 720p, áudio incluso:
+
+| Variante do Veo | `referenceImages` | US$/s | Campanha |
+| --------------- | ----------------- | ----- | -------- |
+| `lite` ← **em uso** | não aceita    | 0,05  | ~US$ 2,40 |
+| `fast`          | aceita            | 0,15  | ~US$ 7,20 |
+| `quality`       | aceita            | 0,40  | ~US$ 19,20 |
+
+Os sete agentes de texto somados ficam abaixo de US$ 0,05 — ruído perto do
+vídeo. A cobrança é por segundo de saída bem-sucedida, então cena que falha não
+entra na conta.
+
+Trocar de variante é mudar `VEO_MODEL` em [`constants.ts`](constants.ts). As três
+limitam `durationSeconds` a 4–8 segundos: **não existe clipe de 10s numa única
+geração**. Confirme os preços na página oficial do Google antes de orçar com
+cliente.
 
 ## Como rodar
 
@@ -12,8 +91,6 @@ npm install
 cp .env.example .env      # preencha GEMINI_API_KEY
 npm run dev               # http://localhost:3000
 ```
-
-Outros comandos:
 
 | Comando             | O que faz                                  |
 | ------------------- | ------------------------------------------ |
@@ -24,8 +101,8 @@ Outros comandos:
 | `npm run build`     | Typecheck + build de produção em `dist/`   |
 | `npm run preview`   | Serve o build de produção                  |
 
-O CI (`.github/workflows/ci.yml`) roda lint, typecheck, testes, deadcode e
-build em cada PR. Para os mesmos checks localmente antes do commit:
+O CI (`.github/workflows/ci.yml`) roda lint, typecheck, testes, deadcode e build
+em cada PR. Para os mesmos checks localmente antes do commit:
 `npx lefthook install`.
 
 ### Chave de API
@@ -44,9 +121,9 @@ O Veo exige um projeto do Google Cloud com **faturamento habilitado**. Sem isso 
 roteiro é gerado normalmente, mas a renderização falha com "modelo não
 encontrado".
 
-## O pipeline
+## Os agentes
 
-Cada etapa é um "agente" com um modelo e um prompt próprios. Todos vivem em
+Cada etapa é um agente com modelo e prompt próprios, todos em
 [`services/geminiService.ts`](services/geminiService.ts).
 
 | # | Agente               | Entrada                        | Saída                        | Modelo             |
@@ -66,25 +143,13 @@ Cada etapa é um "agente" com um modelo e um prompt próprios. Todos vivem em
 O agente Social (7) roda em segundo plano, em paralelo com a renderização: uma
 falha ali não bloqueia o vídeo.
 
-### Decisões que valem explicação
+## Decisões que valem explicação
 
 **A narração entra no prompt do Veo.** O Veo 3.x sintetiza fala a partir do
 prompt. O agente Diretor de Vídeo obriga o prompt a terminar com
 `She says in Brazilian Portuguese: "..."`, mantendo o texto em PT-BR sem
 tradução. Sem isso o roteiro é escrito, exibido e editado — e depois descartado,
 porque nunca chega ao modelo.
-
-**Escolha do modelo Veo, e o que ela custa.** As três variantes estão em
-`VEO_MODELS` (`constants.ts`) com preço e capacidade, verificados contra a API:
-
-| Variante | `referenceImages` | US$/s (720p) | Campanha 6×8s |
-| -------- | ----------------- | ------------ | ------------- |
-| `lite` ← **em uso** | não aceita | 0,05 | ~US$ 2,40 |
-| `fast`   | aceita            | 0,15 | ~US$ 7,20 |
-| `quality`| aceita            | 0,40 | ~US$ 19,20 |
-
-Trocar é mudar `VEO_MODEL` em `constants.ts`. As três limitam `durationSeconds`
-a 4–8 segundos: **não existe clipe de 10s numa única geração**.
 
 **Consistência de personagem.** A foto da influencer vai ao Veo como
 `referenceImages` do tipo `ASSET`, o que segura rosto e roupa entre as cenas —
@@ -136,13 +201,12 @@ Ver [`services/videoMerger.ts`](services/videoMerger.ts).
 
 Um workspace de cinco etapas — Persona, Campanha, Roteiro, Produção, Entrega —
 todas sempre navegáveis. Dá para voltar e trocar a foto do produto depois de ler
-o roteiro sem perder nada; antes o formulário sumia por completo e a única volta
-era `Novo Projeto`, que apagava o trabalho todo.
+o roteiro sem perder nada.
 
 A barra fixa embaixo diz sempre uma de duas coisas: o que falta para avançar
 ("Envie a imagem do produto") ou o que a ação vai fazer, com o custo
-("Renderizar 6 cenas · 30 créditos"). Botão desabilitado sem explicação era o
-padrão anterior.
+("Renderizar 6 cenas · 30 créditos"). Nenhum botão fica desabilitado sem
+explicar por quê.
 
 Os tokens visuais vivem em [`index.css`](index.css) e são expostos ao Tailwind
 em [`tailwind.config.js`](tailwind.config.js). Um acento só (violeta),
@@ -153,7 +217,7 @@ nenhuma cor de texto abaixo de 4.5:1 de contraste.
 
 ```
 App.tsx                    Estado do projeto, pipeline e navegação por etapas
-constants.ts               Custos, limites, timeouts e concorrência
+constants.ts               Custos, limites, timeouts, variantes do Veo
 types.ts                   Tipos compartilhados
 services/geminiService.ts  Os 7 agentes e o laço de retry
 services/failures.ts       Taxonomia de falhas, backoff e mensagens ao usuário
@@ -163,15 +227,18 @@ services/briefingPdf.ts    Export do briefing em PDF (carregado sob demanda)
 utils/files.ts             Conversões de arquivo e limitador de concorrência
 components/ui.tsx          Primitivas: Button, Panel, Field, Toggle, Badge…
 components/Stepper.tsx     Navegação por etapas e a barra de ação fixa
-components/ImageUpload.tsx Upload com label, foco visível e drag-and-drop
+components/MediaUpload.tsx Upload de imagem e vídeo com label e foco visível
 components/steps/          Uma etapa do fluxo por arquivo
 ```
 
 ## Limitações conhecidas
 
+- **Sem consistência de personagem na configuração atual.** O `lite` não aceita
+  imagem de referência, então rosto e roupa variam entre as cenas. Use `fast` se
+  isso importar.
 - **Créditos não correspondem a dinheiro.** 30 créditos por campanha versus o
-  custo real de API na tabela acima. A etapa de Produção mostra a estimativa em
-  dólar ao lado dos créditos para a diferença ficar visível.
+  custo real da tabela acima. A etapa de Produção mostra a estimativa em dólar
+  ao lado dos créditos para a diferença ficar visível.
 - **Créditos são locais.** `INITIAL_CREDITS` é apenas um contador em memória,
   persistido junto com o projeto. Não há cobrança nem servidor.
 - **Os clipes não sobrevivem ao reload.** Salvar o projeto guarda textos e
