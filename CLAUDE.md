@@ -51,6 +51,16 @@ Disparar as 6 cenas juntas estoura a cota por minuto.
 **Créditos são cobrados adiantado e estornados por cena que falha.** Se mexer em
 `renderScenes`, mantenha as duas pontas.
 
+**A UI é um workspace de etapas, não um wizard travado.** Toda etapa é sempre
+navegável (`Stepper`); o que muda é o rodapé, que ou explica o bloqueio ou
+nomeia a ação com o custo. Nunca desabilite um botão sem dizer por quê —
+`blockedBy` em `App.tsx` existe para isso.
+
+**Estilo vem dos tokens.** Cores, tipografia e raios vivem em `index.css` e
+chegam ao Tailwind por `tailwind.config.js`. Não escreva hex direto no JSX, não
+use texto abaixo de 13px (`text-xs` é o piso) e não crie um segundo acento.
+Primitivas repetíveis ficam em `components/ui.tsx`.
+
 ## Convenções
 
 - Comentários explicam *por quê*, não *o quê*. Se um trecho parece estranho,

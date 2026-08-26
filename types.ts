@@ -28,6 +28,15 @@ export interface VideoChunk {
   progressMessage?: string;
 }
 
+/** Steps of the workspace, in order. */
+export type StepId = 'persona' | 'campanha' | 'roteiro' | 'producao' | 'entrega';
+
+/**
+ * `todo` covers both "not started" and "started but incomplete" — the footer
+ * carries the detail, so the marker only needs to know whether it is finished.
+ */
+export type StepState = 'todo' | 'done';
+
 export type VideoStyle = 'cinematic' | 'animation' | 'documentary' | 'vlog';
 export type ScriptMode = 'fast' | 'balanced' | 'complex';
 export type AspectRatio = '16:9' | '9:16';

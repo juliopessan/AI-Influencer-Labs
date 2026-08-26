@@ -1,53 +1,79 @@
 /**
- * Ported from the inline `tailwind.config` that used to live in index.html
- * alongside the CDN build. Keeping it here means the CSS is compiled at build
- * time, so the app no longer breaks when cdn.tailwindcss.com is unreachable.
+ * Colors resolve to the CSS variables declared in index.css. Writing them as
+ * `rgb(var(--x) / <alpha-value>)` keeps Tailwind's opacity modifiers working
+ * (`bg-accent/10`) while the palette itself stays in one place.
  *
  * @type {import('tailwindcss').Config}
  */
+const token = (name) => `rgb(var(--${name}) / <alpha-value>)`;
+
 export default {
   content: ['./index.html', './index.tsx', './App.tsx', './components/**/*.{ts,tsx}'],
   theme: {
     extend: {
-      fontFamily: {
-        sans: ['Inter', 'system-ui', 'sans-serif'],
-        mono: ['JetBrains Mono', 'monospace'],
-      },
       colors: {
-        gray: {
-          900: '#0f172a',
-          800: '#1e293b',
-          700: '#334155',
+        bg: token('bg'),
+        surface: {
+          1: token('surface-1'),
+          2: token('surface-2'),
+          3: token('surface-3'),
         },
-        cyan: {
-          400: '#22d3ee',
-          500: '#06b6d4',
-          600: '#0891b2',
+        line: {
+          DEFAULT: token('line'),
+          strong: token('line-strong'),
         },
-        violet: {
-          500: '#8b5cf6',
-          600: '#7c3aed',
-          900: '#4c1d95',
+        ink: {
+          DEFAULT: token('ink'),
+          2: token('ink-2'),
+          3: token('ink-3'),
         },
+        accent: {
+          DEFAULT: token('accent'),
+          hover: token('accent-hover'),
+          ink: token('accent-ink'),
+        },
+        ok: token('ok'),
+        warn: token('warn'),
+        danger: token('danger'),
+      },
+      fontFamily: {
+        sans: [
+          '-apple-system',
+          'BlinkMacSystemFont',
+          'Segoe UI',
+          'Roboto',
+          'Helvetica Neue',
+          'Arial',
+          'sans-serif',
+        ],
+        mono: ['ui-monospace', 'SFMono-Regular', 'Menlo', 'Consolas', 'monospace'],
+      },
+      fontSize: {
+        // Floor is 13px: the previous UI used 10px for real content.
+        xs: ['0.8125rem', { lineHeight: '1.45' }],
+        sm: ['0.875rem', { lineHeight: '1.5' }],
+        base: ['0.9375rem', { lineHeight: '1.6' }],
+        lg: ['1.0625rem', { lineHeight: '1.5' }],
+        xl: ['1.25rem', { lineHeight: '1.35' }],
+        '2xl': ['1.5rem', { lineHeight: '1.25' }],
+        '3xl': ['1.875rem', { lineHeight: '1.15' }],
+      },
+      borderRadius: {
+        DEFAULT: 'var(--radius)',
+        lg: 'var(--radius-lg)',
       },
       animation: {
-        float: 'float 6s ease-in-out infinite',
-        'pulse-glow': 'pulse-glow 2s cubic-bezier(0.4, 0, 0.6, 1) infinite',
-        'fade-in-up': 'fadeInUp 0.5s ease-out forwards',
-        'spin-slow': 'spin 3s linear infinite',
+        'fade-in': 'fadeIn 200ms ease-out both',
+        'rise-in': 'riseIn 240ms ease-out both',
       },
       keyframes: {
-        float: {
-          '0%, 100%': { transform: 'translateY(0)' },
-          '50%': { transform: 'translateY(-10px)' },
+        fadeIn: {
+          from: { opacity: '0' },
+          to: { opacity: '1' },
         },
-        'pulse-glow': {
-          '0%, 100%': { opacity: '1', boxShadow: '0 0 15px rgba(6,182,212,0.3)' },
-          '50%': { opacity: '.7', boxShadow: '0 0 25px rgba(6,182,212,0.6)' },
-        },
-        fadeInUp: {
-          '0%': { opacity: '0', transform: 'translateY(20px)' },
-          '100%': { opacity: '1', transform: 'translateY(0)' },
+        riseIn: {
+          from: { opacity: '0', transform: 'translateY(6px)' },
+          to: { opacity: '1', transform: 'translateY(0)' },
         },
       },
     },

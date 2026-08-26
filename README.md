@@ -111,18 +111,39 @@ por dois `GainNode`. O contêiner de saída é escolhido por
 `MediaRecorder.isTypeSupported` (WebM VP9 quando disponível, MP4 como fallback).
 Ver [`services/videoMerger.ts`](services/videoMerger.ts).
 
+## A interface
+
+Um workspace de cinco etapas — Persona, Campanha, Roteiro, Produção, Entrega —
+todas sempre navegáveis. Dá para voltar e trocar a foto do produto depois de ler
+o roteiro sem perder nada; antes o formulário sumia por completo e a única volta
+era `Novo Projeto`, que apagava o trabalho todo.
+
+A barra fixa embaixo diz sempre uma de duas coisas: o que falta para avançar
+("Envie a imagem do produto") ou o que a ação vai fazer, com o custo
+("Renderizar 6 cenas · 30 créditos"). Botão desabilitado sem explicação era o
+padrão anterior.
+
+Os tokens visuais vivem em [`index.css`](index.css) e são expostos ao Tailwind
+em [`tailwind.config.js`](tailwind.config.js). Um acento só (violeta),
+superfícies opacas em vez de vidro empilhado, nada de texto abaixo de 13px e
+nenhuma cor de texto abaixo de 4.5:1 de contraste.
+
 ## Estrutura
 
 ```
-App.tsx                    Orquestração do pipeline e estado do projeto
+App.tsx                    Estado do projeto, pipeline e navegação por etapas
 constants.ts               Custos, limites, timeouts e concorrência
 types.ts                   Tipos compartilhados
 services/geminiService.ts  Os 7 agentes e o laço de retry
 services/failures.ts       Taxonomia de falhas, backoff e mensagens ao usuário
 services/failures.spec.ts  Testes da taxonomia e da política de retry
 services/videoMerger.ts    Montagem do corte final (canvas + MediaRecorder)
+services/briefingPdf.ts    Export do briefing em PDF (carregado sob demanda)
 utils/files.ts             Conversões de arquivo e limitador de concorrência
-components/                UI
+components/ui.tsx          Primitivas: Button, Panel, Field, Toggle, Badge…
+components/Stepper.tsx     Navegação por etapas e a barra de ação fixa
+components/ImageUpload.tsx Upload com label, foco visível e drag-and-drop
+components/steps/          Uma etapa do fluxo por arquivo
 ```
 
 ## Limitações conhecidas

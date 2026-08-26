@@ -1,6 +1,5 @@
-
 import React, { useEffect, useRef, useState } from 'react';
-import { CreditIcon, NewProjectIcon, SaveIcon, FolderOpenIcon } from './Icons';
+import { Button } from './ui';
 
 interface HeaderProps {
   credits: number;
@@ -13,9 +12,7 @@ interface HeaderProps {
 const AnimatedCounter: React.FC<{ value: number }> = ({ value }) => {
   const [displayValue, setDisplayValue] = useState(value);
   // The animation's own cursor. Holding it in a ref lets the effect depend on
-  // `value` alone, so one timer runs per credit change; the previous version
-  // listed displayValue as a dependency and so tore the interval down and
-  // rebuilt it on every single tick.
+  // `value` alone, so one timer runs per credit change.
   const displayRef = useRef(value);
 
   useEffect(() => {
@@ -25,84 +22,87 @@ const AnimatedCounter: React.FC<{ value: number }> = ({ value }) => {
       displayRef.current += Math.sign(value - displayRef.current);
       setDisplayValue(displayRef.current);
       if (displayRef.current === value) clearInterval(interval);
-    }, 50);
+    }, 40);
 
     return () => clearInterval(interval);
   }, [value]);
 
-  // Derived rather than stored: the counter reads red exactly while it still
-  // has ground to lose, which drops both the extra state and the timer that
-  // used to reset it.
-  const isDecreasing = displayValue > value;
+  const spending = displayValue > value;
 
   return (
-    <span className={`font-mono font-bold text-lg transition-all duration-300 ${isDecreasing ? 'text-red-400 scale-110 inline-block' : 'text-cyan-300'}`}>
+    <span
+      className={`font-mono text-sm font-semibold tabular-nums transition-colors ${
+        spending ? 'text-warn' : 'text-ink'
+      }`}
+    >
       {displayValue}
     </span>
   );
 };
 
-const Header: React.FC<HeaderProps> = ({ credits, onReset, onSave, onLoad, canLoad }) => {
-  return (
-    <header className="sticky top-4 z-50 px-4 md:px-8 mb-8">
-      <div className="glass-panel rounded-2xl mx-auto py-3 px-6 flex justify-between items-center shadow-2xl shadow-black/20">
-        <div className="flex items-center space-x-3">
-            <div className="relative w-10 h-10 rounded-xl bg-gradient-to-br from-cyan-600 to-violet-600 flex items-center justify-center shadow-[0_0_15px_rgba(6,182,212,0.4)]">
-                <div className="absolute inset-0 bg-white/20 rounded-xl blur-sm"></div>
-                <svg xmlns="http://www.w3.org/2000/svg" className="relative h-6 w-6 text-white drop-shadow-md" viewBox="0 0 20 20" fill="currentColor">
-                    <path d="M2 6a2 2 0 012-2h6a2 2 0 012 2v8a2 2 0 01-2 2H4a2 2 0 01-2-2V6zM14.553 7.106A1 1 0 0014 8v4a1 1 0 00.553.894l2 1A1 1 0 0018 13V7a1 1 0 00-1.447-.894l-2 1z" />
-                </svg>
-            </div>
-            <div>
-              <h1 className="text-xl font-bold tracking-tight text-white">
-                Influencer<span className="text-cyan-400">Labs</span>
-              </h1>
-              <p className="text-[10px] text-gray-400 uppercase tracking-[0.2em]">AI Video Studio</p>
-            </div>
-        </div>
-        
-        <div className="flex items-center space-x-4">
-          <div className="flex items-center space-x-3 bg-black/40 border border-white/5 px-4 py-2 rounded-xl">
-            <div className="p-1 bg-yellow-500/20 rounded-full">
-               <CreditIcon />
-            </div>
-            <div className="flex flex-col items-end leading-none">
-                <AnimatedCounter value={credits} />
-                <span className="text-[10px] text-gray-500 font-bold uppercase">Créditos</span>
-            </div>
-          </div>
-          
-          <div className="h-8 w-[1px] bg-white/10 mx-1"></div>
+const IconButton: React.FC<{
+  label: string;
+  onClick: () => void;
+  disabled?: boolean;
+  children: React.ReactNode;
+}> = ({ label, onClick, disabled, children }) => (
+  <button
+    type="button"
+    onClick={onClick}
+    disabled={disabled}
+    title={label}
+    aria-label={label}
+    className="flex h-9 w-9 items-center justify-center rounded border border-line bg-surface-2 text-ink-2 transition-colors hover:border-line-strong hover:text-ink disabled:opacity-40 disabled:cursor-not-allowed"
+  >
+    {children}
+  </button>
+);
 
-          <button
-            onClick={onSave}
-            className="p-2 rounded-lg bg-gray-800/50 hover:bg-gray-700 text-gray-300 hover:text-white transition-all border border-white/5"
-            title="Salvar Progresso"
-          >
-            <SaveIcon />
-          </button>
-
-          <button
-            onClick={onLoad}
-            disabled={!canLoad}
-            className={`p-2 rounded-lg bg-gray-800/50 hover:bg-gray-700 text-gray-300 hover:text-white transition-all border border-white/5 ${!canLoad ? 'opacity-30 cursor-not-allowed' : ''}`}
-            title="Carregar Projeto Salvo"
-          >
-            <FolderOpenIcon />
-          </button>
-
-          <button
-            onClick={onReset}
-            className="group relative flex items-center justify-center w-10 h-10 md:w-auto md:px-5 md:py-2 rounded-xl bg-gradient-to-r from-violet-600 to-indigo-600 hover:from-violet-500 hover:to-indigo-500 text-white transition-all duration-200 shadow-lg hover:shadow-violet-500/30 active:scale-95 border border-white/10"
-            title="Iniciar Novo Projeto"
-          >
-           <NewProjectIcon />
-            <span className="hidden md:inline-block ml-2 font-medium text-sm">Novo Projeto</span>
-          </button>
-        </div>
+const Header: React.FC<HeaderProps> = ({ credits, onReset, onSave, onLoad, canLoad }) => (
+  <header className="border-b border-line bg-surface-1">
+    {/* One row that never overflows: the brand truncates, the controls do not
+        shrink. The old header pushed its buttons outside the viewport below
+        420px. */}
+    <div className="mx-auto flex max-w-6xl items-center justify-between gap-3 px-4 py-3 sm:px-6">
+      <div className="flex min-w-0 items-center gap-2.5">
+        <span className="flex h-8 w-8 shrink-0 items-center justify-center rounded bg-accent">
+          <svg viewBox="0 0 20 20" className="h-4 w-4 text-white" fill="currentColor" aria-hidden="true">
+            <path d="M2 6a2 2 0 012-2h6a2 2 0 012 2v8a2 2 0 01-2 2H4a2 2 0 01-2-2V6zM14.553 7.106A1 1 0 0014 8v4a1 1 0 00.553.894l2 1A1 1 0 0018 13V7a1 1 0 00-1.447-.894l-2 1z" />
+          </svg>
+        </span>
+        {/* The wordmark is the first thing to go on a narrow screen; the mark
+            alone still identifies the app. */}
+        <span className="hidden truncate text-base font-semibold text-ink sm:inline">Influencer Labs</span>
       </div>
-    </header>
-  );
-};
+
+      <div className="flex shrink-0 items-center gap-2">
+        <span
+          className="flex items-center gap-1.5 rounded border border-line bg-surface-2 px-2.5 py-1.5"
+          title="Créditos restantes"
+        >
+          <AnimatedCounter value={credits} />
+          <span className="hidden text-xs text-ink-3 sm:inline">créditos</span>
+        </span>
+
+        <IconButton label="Salvar projeto" onClick={onSave}>
+          <svg viewBox="0 0 20 20" className="h-4 w-4" fill="none" stroke="currentColor" strokeWidth="1.5">
+            <path d="M4 3h9l3 3v11a1 1 0 01-1 1H4a1 1 0 01-1-1V4a1 1 0 011-1z" />
+            <path d="M6 3v5h7M6 17v-5h8v5" />
+          </svg>
+        </IconButton>
+
+        <IconButton label="Carregar projeto salvo" onClick={onLoad} disabled={!canLoad}>
+          <svg viewBox="0 0 20 20" className="h-4 w-4" fill="none" stroke="currentColor" strokeWidth="1.5">
+            <path d="M3 6a1 1 0 011-1h4l2 2h6a1 1 0 011 1v7a1 1 0 01-1 1H4a1 1 0 01-1-1V6z" />
+          </svg>
+        </IconButton>
+
+        <Button size="sm" onClick={onReset}>
+          Novo
+        </Button>
+      </div>
+    </div>
+  </header>
+);
 
 export default Header;
